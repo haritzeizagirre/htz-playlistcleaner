@@ -155,6 +155,16 @@ export default function CleanerScreen() {
     router.back();
   };
 
+  /** Ir al resumen con lo pendiente (sin necesidad de revisar toda la cola). */
+  const openSummary = () => {
+    if (!playlistId) return;
+    soundManager.pause();
+    router.push({
+      pathname: '/(main)/summary',
+      params: { playlistId, playlistName: playlistName || playlistNameParam },
+    });
+  };
+
   const handleRetry = () => {
     setLoading(true);
     setLoadError(null);
@@ -218,17 +228,12 @@ export default function CleanerScreen() {
               <HtzBadge variant="warning" label={`${removed.length} PARA ELIMINAR`} />
             </View>
           </HtzCard>
-          <HtzButton
-            variant="primary"
-            size="lg"
-            onPress={() =>
-              router.push({
-                pathname: '/(main)/summary',
-                params: { playlistId, playlistName: playlistName || playlistNameParam },
-              })
-            }
-          >
-            Revisar cambios
+          <HtzButton variant="primary" size="lg" onPress={openSummary}>
+            {removed.length === 0
+              ? 'Finalizar sesión'
+              : removed.length === 1
+                ? 'Revisar 1 eliminación'
+                : `Revisar ${removed.length} eliminaciones`}
           </HtzButton>
           <HtzButton variant="ghost" onPress={handleBack}>
             Volver a mis playlists
@@ -286,6 +291,16 @@ export default function CleanerScreen() {
               icon={<Check size={30} color={htzTokens.colors.onPrimary} />}
             />
           </View>
+
+          {removed.length > 0 ? (
+            <View style={styles.finishBox}>
+              <HtzButton variant="outline" size="sm" onPress={openSummary}>
+                {removed.length === 1
+                  ? 'Finalizar ahora · 1 para eliminar'
+                  : `Finalizar ahora · ${removed.length} para eliminar`}
+              </HtzButton>
+            </View>
+          ) : null}
         </>
       )}
     </Screen>
@@ -320,6 +335,10 @@ const styles = StyleSheet.create({
     gap: htzTokens.spacing.lg,
     paddingVertical: htzTokens.spacing.md,
     paddingHorizontal: htzTokens.spacing.md,
+  },
+  finishBox: {
+    alignItems: 'center',
+    paddingBottom: htzTokens.spacing.md,
   },
   circleButton: {
     width: 60,

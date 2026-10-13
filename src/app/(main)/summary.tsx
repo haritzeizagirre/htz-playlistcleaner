@@ -38,6 +38,7 @@ export default function SummaryScreen() {
   const clearSession = useCleanerStore((state) => state.clearSession);
   const sessionPlaylistId = useCleanerStore((state) => state.playlistId);
   const sessionPlaylistName = useCleanerStore((state) => state.playlistName);
+  const remainingCount = useCleanerStore((state) => state.queue.length);
 
   const playlistId = typeof params.playlistId === 'string' ? params.playlistId : sessionPlaylistId;
   const playlistName =
@@ -106,6 +107,16 @@ export default function SummaryScreen() {
   return (
     <Screen>
       <ScreenHeader title="Resumen de la sesión" subtitle={playlistName || undefined} onBack={() => router.back()} />
+
+      {remainingCount > 0 ? (
+        <View style={styles.noticeBox}>
+          <HtzAlert variant="info">
+            {remainingCount === 1
+              ? 'Queda 1 canción sin revisar: se mantendrá tal cual.'
+              : `Quedan ${remainingCount} canciones sin revisar: se mantendrán tal cual.`}
+          </HtzAlert>
+        </View>
+      ) : null}
 
       <View style={styles.tabsBox}>
         <HtzTabs
@@ -203,6 +214,10 @@ function ListSeparator() {
 }
 
 const styles = StyleSheet.create({
+  noticeBox: {
+    paddingHorizontal: htzTokens.spacing.md,
+    paddingBottom: htzTokens.spacing.sm,
+  },
   tabsBox: {
     paddingHorizontal: htzTokens.spacing.md,
     paddingBottom: htzTokens.spacing.sm,

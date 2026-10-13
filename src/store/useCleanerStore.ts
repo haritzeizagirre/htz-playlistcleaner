@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 
 import type { Track } from '@/services/interfaces';
+import { shuffleArray } from '@/utils/shuffle';
 
 interface SwipeRecord {
   action: 'keep' | 'remove';
@@ -46,7 +47,9 @@ export const useCleanerStore = create<CleanerState>()((set, get) => ({
     set({
       playlistId,
       playlistName,
-      queue: [...tracks],
+      // Las tarjetas se barajan: con playlists grandes, revisar en orden fijo
+      // haría que solo vieras las primeras canciones de la lista.
+      queue: shuffleArray(tracks),
       kept: [],
       removed: [],
       history: [],
