@@ -106,7 +106,11 @@ export default function CleanerScreen() {
 
   const isRealYouTubeTrack =
     currentTrack?.provider === 'youtube' && YOUTUBE_VIDEO_ID_PATTERN.test(currentTrack.id);
-  const useYouTubePlayer = isRealYouTubeTrack && currentTrack?.id !== ytFailedTrackId;
+  // El iframe de YouTube es el ÚLTIMO recurso: solo se usa cuando el resolver
+  // multi-fuente (Deezer/iTunes) no encuentra preview y el vídeo es real.
+  const resolverFoundNothing = previewReady && !previewUrl;
+  const useYouTubePlayer =
+    isRealYouTubeTrack && resolverFoundNothing && currentTrack?.id !== ytFailedTrackId;
 
   // Reproducción automática del audio de la tarjeta visible.
   useEffect(() => {
