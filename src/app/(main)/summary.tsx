@@ -1,0 +1,243 @@
+import { useState } from 'react';
+import { FlatList, StyleSheet, Text, View } from 'react-native';
+import { router, useLocalSearchParams } from 'expo-router';
+import { Undo2 } from 'lucide-react-native';
+
+import {
+  HtzAlert,
+  HtzBadge,
+  HtzButton,
+  HtzModal,
+  HtzTabs,
+  htzTokens,
+} from '@haritzeiza/htz-react/native';
+
+import { Screen } from '@/components/Screen';
+import { ScreenHeader } from '@/components/ScreenHeader';
+import { TrackRow } from '@/components/TrackRow';
+import { getMusicService } from '@/services/registry';
+import { useAuthStore } from '@/store/useAuthStore';
+import { useCleanerStore } from '@/store/useCleanerStore';
+
+type TabId = 'removed' | 'kept';
+
+interface ConfirmResult {
+  ok: number;
+  failed: number;
+}
+
+export default function SummaryScreen() {
+  const params = useLocalSearchParams<{ playlistId?: string; playlistName?: string }>();
+  const provider = useAuthStore((state) => state.provider);
+  const mode = useAuthStore((state) => state.mode) ?? 'demo';
+
+  const removed = useCleanerStore((state) => state.removed);
+  const kept = useCleanerStore((state) => state.kept);
+  const restore = useCleanerStore((state) => state.restore);
+  const dropFromPending = useCleanerStore((state) => state.dropFromPending);
+  const clearSession = useCleanerStore((state) => state.clearSession);
+  const sessionPlaylistId = useCleanerStore((state) => state.playlistId);
+  const sessionPlaylistName = useCleanerStore((state) => state.playlistName);
+
+  const playlistId = typeof params.playlistId === 'string' ? params.playlistId : sessionPlaylistId;
+  const playlistName =
+    typeof params.playlistName === 'string' ? params.playlistName : sessionPlaylistName;
+
+  const [tab, setTab] = useState<TabId>(() =>
+    removed.length === 0 && kept.length > 0 ? 'kept' : 'removed'
+  );
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  const [processing, setProcessing] = useState(false);
+  const [result, setResult] = useState<ConfirmResult | null>(null);
+
+  const handleConfirm = async () => {
+    if (!playlistId || !provider || removed.length === 0) return;
+    setProcessing(true);
+    try {
+      const outcome = await getMusicService(provider, mode).removeTracksFromPlaylist(
+        playlistId,
+        removed
+      );
+      if (outcome.failed.length > 0) {
+        dropFromPending(outcome.failed.map((failure) => failure.track.id));
+      }
+      setResult({ ok: outcome.succeeded.length, failed: outcome.failed.length });
+    } catch {
+      setResult({ ok: 0, failed: removed.length });
+    } finally {
+      setProcessing(false);
+      setConfirmOpen(false);
+    }
+  };
+
+  const goHome = () => {
+    clearSession();
+    if (router.canDismiss()) {
+      router.dismissAll();
+    } else {
+      router.replace('/(main)');
+    }
+  };
+
+  if (result) {
+    const success = result.failed === 0;
+    return (
+      <Screen>
+        <ScreenHeader title="Resultado" subtitle={playlistName || undefined} />
+        <View style={styles.padded}>
+          <HtzAlert
+            variant={success ? 'success' : 'warning'}
+            title={success ? 'Cambios aplicados' : 'Cambios parciales'}
+          >
+            {success
+              ? `Se eliminaron ${result.ok} canciones de «${playlistName ?? 'la playlist'}». La playlist ya está actualizada.`
+              : `Se eliminaron ${result.ok} canciones, pero ${result.failed} no se pudieron borrar y siguen en la lista de pendientes.`}
+          </HtzAlert>
+          <HtzButton variant="primary" size="lg" onPress={goHome}>
+            Volver a mis playlists
+          </HtzButton>
+        </View>
+      </Screen>
+    );
+  }
+
+  const data = tab === 'removed' ? removed : kept;
+
+  return (
+    <Screen>
+      <ScreenHeader title="Resumen de la sesión" subtitle={playlistName || undefined} onBack={() => router.back()} />
+
+      <View style={styles.tabsBox}>
+        <HtzTabs
+          tabs={[
+            { id: 'removed', label: `Por eliminar (${removed.length})` },
+            { id: 'kept', label: `Conservadas (${kept.length})` },
+          ]}
+          activeTab={tab}
+          onChange={(id) => setTab(id as TabId)}
+        />
+      </View>
+
+      <FlatList
+        data={data}
+        keyExtractor={(item) => item.id}
+        renderItem={({ item }) => (
+          <TrackRow
+            track={item}
+            right={
+              tab === 'removed' ? (
+                <HtzButton
+                  variant="ghost"
+                  size="sm"
+                  onPress={() => restore(item.id)}
+                  icon={<Undo2 size={14} color={htzTokens.colors.onSurface} />}
+                >
+                  Restaurar
+                </HtzButton>
+              ) : (
+                <HtzBadge variant="success" label="Conservada" />
+              )
+            }
+          />
+        )}
+        ItemSeparatorComponent={ListSeparator}
+        contentContainerStyle={styles.listContent}
+        ListEmptyComponent={
+          <HtzAlert variant="info" title="Nada por aquí">
+            {tab === 'removed'
+              ? 'No hay canciones marcadas para eliminar.'
+              : 'Todavía no has conservado ninguna canción.'}
+          </HtzAlert>
+        }
+        showsVerticalScrollIndicator={false}
+      />
+
+      <View style={styles.footer}>
+        {removed.length > 0 ? (
+          <HtzButton
+            variant="primary"
+            size="lg"
+            onPress={() => setConfirmOpen(true)}
+            style={styles.confirmButton}
+          >
+            {removed.length === 1
+              ? 'Confirmar 1 eliminación'
+              : `Confirmar ${removed.length} eliminaciones`}
+          </HtzButton>
+        ) : (
+          <HtzButton variant="outline" size="lg" onPress={goHome} style={styles.confirmButton}>
+            Volver a mis playlists
+          </HtzButton>
+        )}
+      </View>
+
+      <HtzModal
+        open={confirmOpen}
+        onClose={() => setConfirmOpen(false)}
+        title="Confirmar eliminación"
+        footer={
+          <>
+            <HtzButton variant="outline" onPress={() => setConfirmOpen(false)}>
+              Cancelar
+            </HtzButton>
+            <HtzButton variant="primary" loading={processing} onPress={handleConfirm}>
+              Eliminar
+            </HtzButton>
+          </>
+        }
+      >
+        <Text style={styles.modalText}>
+          Se eliminarán {removed.length} canciones de «{playlistName ?? 'la playlist'}». Esta
+          acción no se puede deshacer.
+        </Text>
+        <Text style={styles.modalHint}>
+          Las canciones se enviarán en una sola operación para ahorrar llamadas a la API.
+        </Text>
+      </HtzModal>
+    </Screen>
+  );
+}
+
+function ListSeparator() {
+  return <View style={styles.separator} />;
+}
+
+const styles = StyleSheet.create({
+  tabsBox: {
+    paddingHorizontal: htzTokens.spacing.md,
+    paddingBottom: htzTokens.spacing.sm,
+  },
+  listContent: {
+    paddingHorizontal: htzTokens.spacing.md,
+    paddingBottom: htzTokens.spacing.md,
+  },
+  separator: {
+    height: htzTokens.spacing.sm,
+  },
+  footer: {
+    paddingHorizontal: htzTokens.spacing.md,
+    paddingTop: htzTokens.spacing.sm,
+    paddingBottom: htzTokens.spacing.sm,
+    borderTopWidth: 1,
+    borderTopColor: htzTokens.colors.surfaceVariant,
+  },
+  confirmButton: {
+    alignSelf: 'stretch',
+  },
+  padded: {
+    paddingHorizontal: htzTokens.spacing.md,
+    paddingTop: htzTokens.spacing.md,
+    gap: htzTokens.spacing.md,
+  },
+  modalText: {
+    fontSize: 14,
+    lineHeight: 21,
+    color: htzTokens.colors.onSurface,
+  },
+  modalHint: {
+    fontSize: 12,
+    lineHeight: 18,
+    color: htzTokens.colors.onSurfaceVariant,
+    marginTop: htzTokens.spacing.sm,
+  },
+});
