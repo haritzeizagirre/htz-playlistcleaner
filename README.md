@@ -65,6 +65,26 @@ npm run lint            # expo lint
 > `haritz-components-react/node_modules`: son consecuencia esperada del enlace local y no
 > afectan al bundle de la app.
 
+## Hub de apps (publicación)
+
+La app forma parte del Hub personal (`haritzeizagirre/htz-hub`). Para publicar una
+versión nueva en el Hub:
+
+```bash
+# Desde C:\VSCode\score_viewer\hub-app
+node scripts/publish-app.mjs playlist-cleaner --bump --changelog "Qué ha cambiado"
+```
+
+Esto sube versión + versionCode en `app.json`, hace commit+push en el repo de la app,
+compila el APK release, crea el GitHub Release y actualiza `catalog/apps.json` del Hub.
+Al abrir el Hub, la app aparecerá como **Descargar** (o **Actualizar**).
+
+- Repo de la app: `haritzeizagirre/htz-playlistcleaner` (público, Releases con el APK).
+- El APK se firma con el keystore de debug del proyecto (`android/app/debug.keystore`),
+  estable entre versiones → las actualizaciones se instalan encima sin desinstalar.
+- **Ojo:** ese keystore es el que tiene registrado el SHA-1 en Google Cloud para el
+  login de YouTube (`5E:8F:16:...`). No cambies de firma sin actualizar el cliente OAuth.
+
 ## Fase 2: Spotify real (implementada)
 
 - **Auth**: Authorization Code + **PKCE** con `expo-auth-session`; tokens (access +
