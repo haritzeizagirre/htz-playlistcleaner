@@ -46,7 +46,7 @@ export function SongCard({ track, style }: SongCardProps) {
             label={track.provider === 'spotify' ? 'SPOTIFY' : 'YT MUSIC'}
           />
           <HtzBadge variant="secondary" label={formatDurationMs(track.durationMs)} />
-          {!track.previewUrl ? (
+          {!track.previewUrl && track.provider !== 'youtube' ? (
             <HtzBadge variant="warning" label="SIN PREVIEW" />
           ) : null}
         </View>

@@ -19,6 +19,7 @@ import { CardDeck, type CardDeckHandle } from '@/components/CardDeck';
 import { Screen } from '@/components/Screen';
 import { ScreenHeader } from '@/components/ScreenHeader';
 import { UndoSnackbar } from '@/components/UndoSnackbar';
+import { YouTubeAudioPlayer } from '@/components/YouTubeAudioPlayer';
 import { resolvePreviewUrl } from '@/services/audio/previewResolver';
 import { soundManager } from '@/services/audio/soundManager';
 import { getMusicService } from '@/services/registry';
@@ -26,6 +27,9 @@ import { useAuthStore } from '@/store/useAuthStore';
 import { useCleanerStore } from '@/store/useCleanerStore';
 import { humanizeMusicError } from '@/utils/errors';
 import { providerLabel } from '@/utils/format';
+
+/** Un ID de vídeo real de YouTube tiene 11 caracteres (los mocks no). */
+const YOUTUBE_VIDEO_ID_PATTERN = /^[A-Za-z0-9_-]{11}$/;
 
 export default function CleanerScreen() {
   const params = useLocalSearchParams<{ playlistId?: string; playlistName?: string }>();
@@ -52,6 +56,7 @@ export default function CleanerScreen() {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [reloadKey, setReloadKey] = useState(0);
   const [preview, setPreview] = useState<{ trackId: string; url: string | null } | null>(null);
+  const [ytFailedTrackId, setYtFailedTrackId] = useState<string | null>(null);
   const [isFocused, setIsFocused] = useState(true);
   const [dismissedAt, setDismissedAt] = useState<number | null>(null);
   const deckRef = useRef<CardDeckHandle>(null);
@@ -99,9 +104,20 @@ export default function CleanerScreen() {
   const previewUrl = previewReady && preview ? preview.url : null;
   const previewLoading = Boolean(currentTrack) && !previewReady;
 
-  // Reproducción automática del preview de la tarjeta visible.
+  const isRealYouTubeTrack =
+    currentTrack?.provider === 'youtube' && YOUTUBE_VIDEO_ID_PATTERN.test(currentTrack.id);
+  const useYouTubePlayer = isRealYouTubeTrack && currentTrack?.id !== ytFailedTrackId;
+
+  // Reproducción automática del audio de la tarjeta visible.
   useEffect(() => {
     if (!isFocused || !currentTrack) return;
+
+    if (useYouTubePlayer) {
+      // El reproductor de YouTube gestiona su propio audio.
+      soundManager.pause();
+      return;
+    }
+
     let cancelled = false;
     const trackId = currentTrack.id;
 
@@ -119,7 +135,7 @@ export default function CleanerScreen() {
     return () => {
       cancelled = true;
     };
-  }, [currentTrack, isFocused]);
+  }, [currentTrack, isFocused, useYouTubePlayer]);
 
   const lastRecord = history[history.length - 1];
   const showUndo = lastRecord?.action === 'remove' && dismissedAt !== history.length && !loading;
@@ -230,7 +246,16 @@ export default function CleanerScreen() {
           </View>
 
           <View style={styles.playerBox}>
-            <AudioPlayer previewUrl={previewUrl} loading={previewLoading} />
+            {useYouTubePlayer && currentTrack ? (
+              <YouTubeAudioPlayer
+                key={currentTrack.id}
+                videoId={currentTrack.id}
+                active={isFocused}
+                onUnavailable={() => setYtFailedTrackId(currentTrack.id)}
+              />
+            ) : (
+              <AudioPlayer previewUrl={previewUrl} loading={previewLoading} />
+            )}
           </View>
 
           <View style={styles.controls}>
