@@ -2,7 +2,7 @@
   "expo": {
     "name": "Playlist Cleaner",
     "slug": "playlist-cleaner",
-    "version": "1.1.0",
+    "version": "1.1.1",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
     "scheme": "playlistcleaner",
@@ -15,7 +15,7 @@
     },
     "android": {
       "package": "com.haritzeiza.playlistcleaner",
-      "versionCode": 2,
+      "versionCode": 3,
       "adaptiveIcon": {
         "backgroundColor": "#1a1a1a",
         "foregroundImage": "./assets/images/android-icon-foreground.png",
