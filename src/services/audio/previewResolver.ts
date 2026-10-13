@@ -39,7 +39,7 @@ export function cleanArtist(raw: string): string {
     .trim();
 }
 
-/** Quita los segmentos de "|" y los corchetes ruidosos (conserva feat.). */
+/** Limpia títulos de YouTube: corta en "|", quita corchetes ruidosos. */
 export function cleanTitle(raw: string): string {
   let title = raw.trim();
 
@@ -55,6 +55,14 @@ export function cleanTitle(raw: string): string {
   });
 
   return title.replace(/\s{2,}/g, ' ').trim();
+}
+
+/** Último recurso: fuera TODOS los paréntesis/corchetes ("Where You Are (w/ Jex)" → "Where You Are"). */
+export function stripAllBrackets(title: string): string {
+  return title
+    .replace(/[([][^)\]]*[)\]]/g, ' ')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
 }
 
 /** Parte común de "… | …" que suele contener "Artista - Canción". */
@@ -95,13 +103,20 @@ export function buildSearchTerms(track: Track): SearchTerms[] {
   const titleArtist = artistFromTitle(track.title);
   const titleSong = titleFromTitle(track.title);
   const channel = cleanArtist(track.artist);
-  const cleaned = cleanTitle(track.title);
+  // La canción ya sin el prefijo "Artista - " (si estaba en el título).
+  const cleanedSong = titleSong ? cleanTitle(titleSong) : cleanTitle(track.title);
+  const bareSong = stripAllBrackets(cleanedSong);
 
   // 1) "Artista - Canción" sacado del propio título (el caso NCS).
-  if (titleArtist && titleSong) add(titleArtist, titleSong);
-  // 2) Canal limpio (sin "- Topic") + título limpio.
-  add(channel, cleaned);
-  // 3) Último recurso: canal limpio + título original (búsquedas sueltas).
+  if (titleArtist) add(titleArtist, cleanedSong);
+  // 2) Canal limpio (sin "- Topic") + canción limpia.
+  add(channel, cleanedSong);
+  // 3) Sin paréntesis de ningún tipo ("Where You Are (w/ Jex)" → "Where You Are").
+  if (bareSong !== cleanedSong) {
+    add(channel, bareSong);
+    if (titleArtist) add(titleArtist, bareSong);
+  }
+  // 4) Último recurso: canal limpio + título original (búsquedas sueltas).
   add(channel, track.title);
 
   return candidates;
