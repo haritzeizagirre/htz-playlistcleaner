@@ -28,6 +28,7 @@ Plan de desarrollo completo: [`plan_de_desarrollo_playlist_cleaner.md`](./plan_d
 ## Estructura
 
 ```text
+branding/                     # logo (tarjeta + nota): SVG → PNG con sharp
 src/
 ├── app/                      # rutas (expo-router)
 │   ├── (auth)/login.tsx      # selección de proveedor
