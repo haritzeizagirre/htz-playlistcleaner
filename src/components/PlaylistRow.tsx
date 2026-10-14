@@ -4,8 +4,8 @@ import { ChevronRight, Sparkles } from 'lucide-react-native';
 
 import {
   HtzBadge,
+  HtzButton,
   HtzCard,
-  HtzChip,
   htzTokens,
 } from '@haritzeiza/htz-react/native';
 
@@ -15,15 +15,15 @@ import { formatTrackCount, providerLabel } from '@/utils/format';
 interface PlaylistRowProps {
   playlist: PlaylistSummary;
   onOpen: () => void;
-  onDiscover: () => void;
+  onAddSimilar: () => void;
 }
 
 /**
- * Fila de playlist. El área principal (abrir limpieza) y el chip "Descubrir"
- * son elementos interactivos hermanos: anidar botones rompe la semántica
- * HTML en web y genera errores de hidratación.
+ * Fila de playlist. El área principal (abrir limpieza) y la acción extra
+ * "Añadir canciones parecidas" son elementos interactivos hermanos: anidar
+ * botones rompe la semántica HTML en web y genera errores de hidratación.
  */
-export function PlaylistRow({ playlist, onOpen, onDiscover }: PlaylistRowProps) {
+export function PlaylistRow({ playlist, onOpen, onAddSimilar }: PlaylistRowProps) {
   return (
     <HtzCard elevated style={styles.card}>
       <View style={styles.row}>
@@ -54,15 +54,22 @@ export function PlaylistRow({ playlist, onOpen, onDiscover }: PlaylistRowProps) 
           </View>
         </TouchableOpacity>
 
-        <View style={styles.actions}>
-          <HtzChip
-            label="Descubrir"
-            variant="primary"
-            onPress={onDiscover}
-            icon={<Sparkles size={13} color={htzTokens.colors.inversePrimary} />}
-          />
-          <ChevronRight size={20} color={htzTokens.colors.outline} />
-        </View>
+        <ChevronRight size={20} color={htzTokens.colors.outline} />
+      </View>
+
+      {/* Acción extra en su propia franja: deja claro que sirve para ampliar
+          la playlist con canciones parecidas. */}
+      <View style={styles.similarRow}>
+        <HtzButton
+          variant="ghost"
+          size="sm"
+          accessibilityLabel={`Añadir canciones parecidas a ${playlist.name}`}
+          onPress={onAddSimilar}
+          style={styles.similarButton}
+          icon={<Sparkles size={15} color={htzTokens.colors.primary} />}
+        >
+          Añadir canciones parecidas
+        </HtzButton>
       </View>
     </HtzCard>
   );
@@ -111,9 +118,14 @@ const styles = StyleSheet.create({
     gap: 6,
     marginTop: 2,
   },
-  actions: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
+  similarRow: {
+    marginTop: 12,
+    paddingTop: 8,
+    borderTopWidth: 1,
+    borderTopColor: htzTokens.colors.surfaceVariant,
+  },
+  similarButton: {
+    alignSelf: 'flex-start',
+    paddingHorizontal: 0,
   },
 });

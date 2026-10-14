@@ -16,7 +16,11 @@ import { TrackRow } from '@/components/TrackRow';
 import type { Track } from '@/services/interfaces';
 import { getMusicService } from '@/services/registry';
 import { useAuthStore } from '@/store/useAuthStore';
+import { useCleanerStore } from '@/store/useCleanerStore';
 import { humanizeMusicError } from '@/utils/errors';
+
+/** Número de canciones semilla que alimentan las propuestas. */
+const SEED_COUNT = 5;
 
 export default function DiscoveryScreen() {
   const params = useLocalSearchParams<{ playlistId?: string; playlistName?: string }>();
@@ -24,8 +28,12 @@ export default function DiscoveryScreen() {
   const playlistName = typeof params.playlistName === 'string' ? params.playlistName : 'Playlist';
   const provider = useAuthStore((state) => state.provider);
   const mode = useAuthStore((state) => state.mode) ?? 'demo';
+  const sessionPlaylistId = useCleanerStore((state) => state.playlistId);
+  const sessionKept = useCleanerStore((state) => state.kept);
 
   const [recommendations, setRecommendations] = useState<Track[] | null>(null);
+  /** true si las propuestas parten de las canciones conservadas en la limpieza. */
+  const [basedOnKept, setBasedOnKept] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [reloadKey, setReloadKey] = useState(0);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
@@ -40,14 +48,24 @@ export default function DiscoveryScreen() {
       try {
         const service = getMusicService(provider, mode);
         const tracks = await service.getPlaylistTracks(playlistId);
-        const seeds = tracks.slice(0, 5).map((track) => track.id);
-        const suggestions = await service.getRecommendations(seeds);
-        if (!cancelled) setRecommendations(suggestions);
+        // Semillas: primero lo que conservaste en la limpieza (si la sesión es
+        // de esta playlist) y después sus canciones, hasta SEED_COUNT.
+        const keptIds =
+          sessionPlaylistId === playlistId ? sessionKept.map((track) => track.id) : [];
+        const seedIds = [...new Set([...keptIds, ...tracks.map((track) => track.id)])].slice(
+          0,
+          SEED_COUNT
+        );
+        const suggestions = await service.getRecommendations(seedIds);
+        if (!cancelled) {
+          setBasedOnKept(keptIds.length > 0);
+          setRecommendations(suggestions);
+        }
       } catch (cause) {
         if (!cancelled) {
           const detail = cause instanceof Error ? cause.message : String(cause);
           console.warn('[discovery] getRecommendations falló:', detail);
-          setError(`No se pudieron cargar las recomendaciones: ${humanizeMusicError(detail)}`);
+          setError(`No se pudieron cargar las canciones parecidas: ${humanizeMusicError(detail)}`);
         }
       }
     })();
@@ -55,7 +73,7 @@ export default function DiscoveryScreen() {
     return () => {
       cancelled = true;
     };
-  }, [playlistId, provider, mode, reloadKey]);
+  }, [playlistId, provider, mode, reloadKey, sessionPlaylistId, sessionKept]);
 
   const selectedTracks = useMemo(
     () => (recommendations ?? []).filter((track) => selectedIds.includes(track.id)),
@@ -99,10 +117,10 @@ export default function DiscoveryScreen() {
   if (!playlistId || !provider) {
     return (
       <Screen>
-        <ScreenHeader title="Descubrir" onBack={() => router.back()} />
+        <ScreenHeader title="Añadir canciones parecidas" onBack={() => router.back()} />
         <View style={styles.padded}>
           <HtzAlert variant="error" title="Playlist no especificada">
-            Vuelve al inicio y elige una playlist para descubrir canciones afines.
+            Vuelve al inicio y elige una playlist para buscarle canciones parecidas.
           </HtzAlert>
           <HtzButton variant="outline" onPress={() => router.replace('/(main)')}>
             Ir a mis playlists
@@ -115,14 +133,16 @@ export default function DiscoveryScreen() {
   return (
     <Screen>
       <ScreenHeader
-        title="Descubrir"
+        title="Añadir canciones parecidas"
         subtitle={playlistName}
         onBack={() => router.back()}
       />
 
       <View style={styles.introBox}>
-        <HtzAlert variant="info" title="Recomendaciones">
-          {`Basadas en las primeras canciones de «${playlistName}». En la Fase 5 se afinarán con los artistas de las pistas que conserves.`}
+        <HtzAlert variant="info" title="Canciones parecidas">
+          {basedOnKept
+            ? `Propuestas parecidas a las canciones que conservaste de «${playlistName}».`
+            : `Propuestas parecidas a las que ya suenan en «${playlistName}».`}
         </HtzAlert>
         {lastAdded !== null ? (
           <HtzAlert variant="success" title="Añadidas a la playlist">
@@ -136,7 +156,7 @@ export default function DiscoveryScreen() {
       {isLoading ? (
         <View style={styles.center}>
           <HtzSpinner size="lg" />
-          <Text style={styles.centerText}>Buscando canciones afines...</Text>
+          <Text style={styles.centerText}>Buscando canciones parecidas...</Text>
         </View>
       ) : error ? (
         <View style={styles.padded}>
@@ -174,8 +194,8 @@ export default function DiscoveryScreen() {
           ItemSeparatorComponent={ListSeparator}
           contentContainerStyle={styles.listContent}
           ListEmptyComponent={
-            <HtzAlert variant="info" title="Sin sugerencias">
-              No hemos encontrado canciones afines a esta playlist.
+            <HtzAlert variant="info" title="Sin propuestas">
+              No hemos encontrado canciones parecidas para esta playlist.
             </HtzAlert>
           }
           showsVerticalScrollIndicator={false}

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 import { router, useFocusEffect, useLocalSearchParams } from 'expo-router';
-import { Check, Undo2, X } from 'lucide-react-native';
+import { Check, Headphones, Music2, Undo2, X } from 'lucide-react-native';
 
 import {
   HtzAlert,
@@ -40,23 +40,25 @@ export default function CleanerScreen() {
   const provider = useAuthStore((state) => state.provider);
   const mode = useAuthStore((state) => state.mode) ?? 'demo';
 
-  const {
-    queue,
-    kept,
-    removed,
-    history,
-    playlistName,
-    startSession,
-    keep,
-    remove,
-    undo,
-  } = useCleanerStore();
+  // Suscripciones granulares: evita re-renders de esta pantalla cuando cambian
+  // partes del store que no usa (p. ej. la pantalla de resumen de debajo).
+  const queue = useCleanerStore((state) => state.queue);
+  const kept = useCleanerStore((state) => state.kept);
+  const removed = useCleanerStore((state) => state.removed);
+  const history = useCleanerStore((state) => state.history);
+  const playlistName = useCleanerStore((state) => state.playlistName);
+  const startSession = useCleanerStore((state) => state.startSession);
+  const keep = useCleanerStore((state) => state.keep);
+  const remove = useCleanerStore((state) => state.remove);
+  const undo = useCleanerStore((state) => state.undo);
 
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [reloadKey, setReloadKey] = useState(0);
   const [preview, setPreview] = useState<{ trackId: string; url: string | null } | null>(null);
   const [ytFailedTrackId, setYtFailedTrackId] = useState<string | null>(null);
+  /** El usuario prefiere escuchar la canción completa (iframe) en vez del preview. */
+  const [preferFullSong, setPreferFullSong] = useState(false);
   const [isFocused, setIsFocused] = useState(true);
   const [dismissedAt, setDismissedAt] = useState<number | null>(null);
   const deckRef = useRef<CardDeckHandle>(null);
@@ -106,29 +108,35 @@ export default function CleanerScreen() {
 
   const isRealYouTubeTrack =
     currentTrack?.provider === 'youtube' && YOUTUBE_VIDEO_ID_PATTERN.test(currentTrack.id);
-  // El iframe de YouTube es el ÚLTIMO recurso: solo se usa cuando el resolver
-  // multi-fuente (Deezer/iTunes) no encuentra preview y el vídeo es real.
+  const canUseYouTubePlayer = isRealYouTubeTrack && currentTrack?.id !== ytFailedTrackId;
+  // El resolver multi-fuente (Deezer/iTunes) no encontró nada: el iframe es el último recurso.
   const resolverFoundNothing = previewReady && !previewUrl;
-  const useYouTubePlayer =
-    isRealYouTubeTrack && resolverFoundNothing && currentTrack?.id !== ytFailedTrackId;
+  // El iframe se usa en dos casos: último recurso (sin preview) o petición explícita
+  // del usuario de escuchar la canción completa.
+  const useYouTubePlayer = canUseYouTubePlayer && (preferFullSong || resolverFoundNothing);
+  // El toggle no aparece cuando el resolver se quedó sin preview: ahí el iframe es
+  // la única opción y no hay vuelta al preview.
+  const showFullSongToggle = canUseYouTubePlayer && !resolverFoundNothing;
 
   // Reproducción automática del audio de la tarjeta visible.
   useEffect(() => {
     if (!isFocused || !currentTrack) return;
 
-    if (useYouTubePlayer) {
-      // El reproductor de YouTube gestiona su propio audio.
-      soundManager.pause();
-      return;
-    }
-
     let cancelled = false;
     const trackId = currentTrack.id;
+
+    // Con el iframe activo el MP3 calla: el reproductor de YouTube gestiona su
+    // audio. Aun así se resuelve el preview en segundo plano para saber si
+    // existe y poder ofrecer el toggle de "volver al preview".
+    if (useYouTubePlayer) {
+      soundManager.pause();
+    }
 
     (async () => {
       const url = await resolvePreviewUrl(currentTrack);
       if (cancelled) return;
       setPreview({ trackId, url });
+      if (useYouTubePlayer) return;
       if (url) {
         soundManager.load(url);
       } else {
@@ -140,6 +148,38 @@ export default function CleanerScreen() {
       cancelled = true;
     };
   }, [currentTrack, isFocused, useYouTubePlayer]);
+
+  // Mantiene listas las próximas tarjetas: resuelve su preview y deja el audio
+  // precargado, de modo que al pasar de canción el sonido arranca al instante
+  // (sin el parón del búfer inicial). Los fallos también se cachean.
+  useEffect(() => {
+    if (!isFocused) return;
+    let cancelled = false;
+
+    (async () => {
+      const upcoming = queue.slice(1, 5);
+      const urls = await Promise.all(
+        upcoming.map((track) => resolvePreviewUrl(track).catch(() => null))
+      );
+      if (cancelled) return;
+      soundManager.syncPreloads(
+        urls.filter((url): url is string => Boolean(url)).slice(0, 2)
+      );
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [isFocused, queue]);
+
+  /** Decisión del deck; estable para no re-crear gestos en cada render. */
+  const handleDecision = useCallback(
+    (action: 'keep' | 'remove') => {
+      if (action === 'keep') keep();
+      else remove();
+    },
+    [keep, remove]
+  );
 
   const lastRecord = history[history.length - 1];
   const showUndo = lastRecord?.action === 'remove' && dismissedAt !== history.length && !loading;
@@ -242,11 +282,7 @@ export default function CleanerScreen() {
       ) : (
         <>
           <View style={styles.deckContainer}>
-            <CardDeck
-              ref={deckRef}
-              tracks={queue}
-              onDecision={(action) => (action === 'keep' ? keep() : remove())}
-            />
+            <CardDeck ref={deckRef} tracks={queue} onDecision={handleDecision} />
             <UndoSnackbar
               track={snackbarTrack}
               onUndo={() => undo()}
@@ -255,11 +291,41 @@ export default function CleanerScreen() {
           </View>
 
           <View style={styles.playerBox}>
+            {/* El hueco se reserva siempre que el iframe sea posible: el botón
+                aparece/desaparece según la canción y el deck no debe moverse. */}
+            {canUseYouTubePlayer ? (
+              <View style={styles.fullSongToggle}>
+                {showFullSongToggle ? (
+                  <HtzButton
+                    variant="ghost"
+                    size="sm"
+                    accessibilityLabel={
+                      preferFullSong
+                        ? 'Volver al preview de 30 segundos'
+                        : 'Escuchar la canción completa'
+                    }
+                    onPress={() => setPreferFullSong((value) => !value)}
+                    icon={
+                      preferFullSong ? (
+                        <Music2 size={16} color={htzTokens.colors.onSurfaceVariant} />
+                      ) : (
+                        <Headphones size={16} color={htzTokens.colors.onSurface} />
+                      )
+                    }
+                  >
+                    {preferFullSong ? 'Volver al preview de 30 s' : 'Escuchar la canción completa'}
+                  </HtzButton>
+                ) : null}
+              </View>
+            ) : null}
+
             {useYouTubePlayer && currentTrack ? (
               <YouTubeAudioPlayer
                 key={currentTrack.id}
                 videoId={currentTrack.id}
                 active={isFocused}
+                // Petición explícita del usuario: empieza en 0 (sin saltar la intro).
+                skipIntro={!preferFullSong}
                 onUnavailable={() => setYtFailedTrackId(currentTrack.id)}
               />
             ) : (
@@ -292,15 +358,15 @@ export default function CleanerScreen() {
             />
           </View>
 
-          {removed.length > 0 ? (
-            <View style={styles.finishBox}>
-              <HtzButton variant="outline" size="sm" onPress={openSummary}>
-                {removed.length === 1
+          <View style={styles.finishBox}>
+            <HtzButton variant="outline" size="sm" onPress={openSummary}>
+              {removed.length === 0
+                ? 'Finalizar sesión'
+                : removed.length === 1
                   ? 'Finalizar ahora · 1 para eliminar'
                   : `Finalizar ahora · ${removed.length} para eliminar`}
-              </HtzButton>
-            </View>
-          ) : null}
+            </HtzButton>
+          </View>
         </>
       )}
     </Screen>
@@ -327,6 +393,13 @@ const styles = StyleSheet.create({
   playerBox: {
     paddingHorizontal: htzTokens.spacing.md,
     paddingTop: htzTokens.spacing.sm,
+  },
+  fullSongToggle: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    // Hueco fijo (botón sm 32 + separación): reserva el espacio aunque el
+    // botón esté oculto, para que el deck no cambie de alto.
+    height: 36,
   },
   controls: {
     flexDirection: 'row',

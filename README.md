@@ -14,7 +14,7 @@ Plan de desarrollo completo: [`plan_de_desarrollo_playlist_cleaner.md`](./plan_d
 | 2 | ✅ Implementada (pendiente de probar en device) | Spotify real: OAuth PKCE + Web API + SecureStore |
 | 3 | ✅ Implementada (verificada en emulador) | YouTube Music real: Google Sign-In + YouTube Data API v3 |
 | 4 | ✅ Base lista | Batching/descarte optimista + resumen antes de confirmar |
-| 5 | ✅ Base lista | Modo descubrimiento (real en Spotify vía búsqueda por artistas) |
+| 5 | ✅ Base lista | Añadir canciones parecidas: propuestas por artistas semilla (real en Spotify y YouTube) |
 
 ## Stack
 
@@ -36,7 +36,7 @@ src/
 │       ├── index.tsx         # selector de playlists (buscar/ordenar)
 │       ├── cleaner.tsx       # swipe deck + audio + deshacer
 │       ├── summary.tsx       # resumen y confirmación por lotes
-│       └── discovery.tsx     # recomendaciones (swipe right → añadir)
+│       └── discovery.tsx     # añadir canciones parecidas a una playlist
 ├── components/               # CardDeck, SongCard, AudioPlayer, UndoSnackbar...
 ├── services/
 │   ├── interfaces.ts         # Track, PlaylistSummary, IMusicService
@@ -114,6 +114,9 @@ Al abrir el Hub, la app aparecerá como **Descargar** (o **Actualizar**).
   canal con `/search` (`relatedToVideoId` está deprecado).
 - **Cuota**: 10.000 unidades/día. El flujo agrupa los borrados al confirmar en el resumen.
 - **Previews**: YouTube no da MP3; el resolver de iTunes cubre los fragmentos de 30 s.
+- **Canción completa**: en pistas de YouTube con vídeo real, el reproductor permite alternar entre
+  el preview de 30 s y el vídeo completo (reutiliza el iframe oculto, sin coste de cuota). Al pedirlo
+  expresamente, la reproducción empieza en 0; como último recurso (sin preview) sigue saltando la intro.
 - **Config**: `src/services/youtube/youtubeConfig.ts` (Client ID **Web**) + cliente OAuth
   **Android** (package `com.haritzeiza.playlistcleaner` + SHA-1 del keystore de debug).
 

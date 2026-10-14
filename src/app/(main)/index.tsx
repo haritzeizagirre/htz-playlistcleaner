@@ -107,7 +107,7 @@ export default function PlaylistsScreen() {
     });
   };
 
-  const openDiscovery = (playlist: PlaylistSummary) => {
+  const openSimilarSongs = (playlist: PlaylistSummary) => {
     router.push({
       pathname: '/(main)/discovery',
       params: { playlistId: playlist.id, playlistName: playlist.name },
@@ -193,7 +193,7 @@ export default function PlaylistsScreen() {
               <PlaylistRow
                 playlist={item}
                 onOpen={() => openCleaner(item)}
-                onDiscover={() => openDiscovery(item)}
+                onAddSimilar={() => openSimilarSongs(item)}
               />
             )}
             contentContainerStyle={styles.listContent}

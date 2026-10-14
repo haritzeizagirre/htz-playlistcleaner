@@ -1,3 +1,4 @@
+import { memo } from 'react';
 import { StyleSheet, Text, View, type StyleProp, type ViewStyle } from 'react-native';
 import { Image } from 'expo-image';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -13,7 +14,7 @@ interface SongCardProps {
 }
 
 /** Tarjeta visual de canción del deck: portada + degradado + metadatos. */
-export function SongCard({ track, style }: SongCardProps) {
+export const SongCard = memo(function SongCard({ track, style }: SongCardProps) {
   return (
     <View style={[styles.card, style]}>
       <Image
@@ -53,7 +54,7 @@ export function SongCard({ track, style }: SongCardProps) {
       </View>
     </View>
   );
-}
+});
 
 const styles = StyleSheet.create({
   card: {

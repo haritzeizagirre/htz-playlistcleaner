@@ -1,12 +1,13 @@
 import { useState } from 'react';
 import { FlatList, StyleSheet, Text, View } from 'react-native';
 import { router, useLocalSearchParams } from 'expo-router';
-import { Undo2 } from 'lucide-react-native';
+import { Sparkles, Undo2 } from 'lucide-react-native';
 
 import {
   HtzAlert,
   HtzBadge,
   HtzButton,
+  HtzCard,
   HtzModal,
   HtzTabs,
   htzTokens,
@@ -80,6 +81,19 @@ export default function SummaryScreen() {
     }
   };
 
+  /**
+   * Acción extra al terminar la sesión: buscar canciones parecidas a las
+   * conservadas y añadirlas. No limpia la sesión para que las semillas sigan
+   * disponibles en la pantalla de descubrimiento.
+   */
+  const openSimilar = () => {
+    if (!playlistId) return;
+    router.push({
+      pathname: '/(main)/discovery',
+      params: { playlistId, playlistName: playlistName || 'Playlist' },
+    });
+  };
+
   if (result) {
     const success = result.failed === 0;
     return (
@@ -94,6 +108,20 @@ export default function SummaryScreen() {
               ? `Se eliminaron ${result.ok} canciones de «${playlistName ?? 'la playlist'}». La playlist ya está actualizada.`
               : `Se eliminaron ${result.ok} canciones, pero ${result.failed} no se pudieron borrar y siguen en la lista de pendientes.`}
           </HtzAlert>
+          <HtzCard elevated style={styles.extraCard}>
+            <View style={styles.extraTitleRow}>
+              <Sparkles size={16} color={htzTokens.colors.primary} />
+              <Text style={styles.extraTitle}>¿Y si la amplías?</Text>
+            </View>
+            <Text style={styles.extraText}>
+              Busca canciones parecidas a las que conservaste y añádelas a la playlist sin salir
+              de la app.
+            </Text>
+            <HtzButton variant="outline" onPress={openSimilar}>
+              Añadir canciones parecidas
+            </HtzButton>
+          </HtzCard>
+
           <HtzButton variant="primary" size="lg" onPress={goHome}>
             Volver a mis playlists
           </HtzButton>
@@ -176,9 +204,20 @@ export default function SummaryScreen() {
               : `Confirmar ${removed.length} eliminaciones`}
           </HtzButton>
         ) : (
-          <HtzButton variant="outline" size="lg" onPress={goHome} style={styles.confirmButton}>
-            Volver a mis playlists
-          </HtzButton>
+          <>
+            <HtzButton
+              variant="outline"
+              size="lg"
+              onPress={openSimilar}
+              style={styles.confirmButton}
+              icon={<Sparkles size={18} color={htzTokens.colors.inversePrimary} />}
+            >
+              Añadir canciones parecidas
+            </HtzButton>
+            <HtzButton variant="ghost" onPress={goHome}>
+              Volver a mis playlists
+            </HtzButton>
+          </>
         )}
       </View>
 
@@ -233,6 +272,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: htzTokens.spacing.md,
     paddingTop: htzTokens.spacing.sm,
     paddingBottom: htzTokens.spacing.sm,
+    gap: htzTokens.spacing.sm,
     borderTopWidth: 1,
     borderTopColor: htzTokens.colors.surfaceVariant,
   },
@@ -254,5 +294,23 @@ const styles = StyleSheet.create({
     lineHeight: 18,
     color: htzTokens.colors.onSurfaceVariant,
     marginTop: htzTokens.spacing.sm,
+  },
+  extraCard: {
+    gap: 10,
+  },
+  extraTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  extraTitle: {
+    fontSize: 15,
+    fontWeight: '800',
+    color: htzTokens.colors.onSurface,
+  },
+  extraText: {
+    fontSize: 13,
+    lineHeight: 19,
+    color: htzTokens.colors.onSurfaceVariant,
   },
 });

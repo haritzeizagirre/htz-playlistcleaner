@@ -10,6 +10,7 @@ import {
 } from '@haritzeiza/htz-react/native';
 
 import { soundManager } from '@/services/audio/soundManager';
+import { PLAYER_CARD_MIN_HEIGHT } from '@/utils/constants';
 import { formatSeconds } from '@/utils/format';
 
 interface AudioPlayerProps {
@@ -80,13 +81,20 @@ export function AudioPlayer({ previewUrl, loading = false, disabled = false }: A
         style={styles.progress}
       />
 
-      {loading ? (
-        <Text style={styles.loadingPreview}>Cargando preview...</Text>
-      ) : !hasPreview ? (
-        <Text style={styles.noPreview}>
-          Preview no disponible para este tema. El resto de funciones sigue funcionando.
-        </Text>
-      ) : null}
+      {/* Hueco de altura fija: la tarjeta no debe crecer/encoger al cambiar de
+          canción (eso redimensionaba el deck y se percibía como un pequeño
+          zoom en cada tarjeta). */}
+      <View style={styles.status}>
+        {loading ? (
+          <Text style={styles.statusText} numberOfLines={1}>
+            Cargando preview...
+          </Text>
+        ) : !hasPreview ? (
+          <Text style={[styles.statusText, styles.statusWarning]} numberOfLines={1}>
+            Preview no disponible para este tema
+          </Text>
+        ) : null}
+      </View>
     </HtzCard>
   );
 }
@@ -96,6 +104,7 @@ const styles = StyleSheet.create({
     paddingVertical: 12,
     paddingHorizontal: htzTokens.spacing.md,
     gap: 10,
+    minHeight: PLAYER_CARD_MIN_HEIGHT,
   },
   row: {
     flexDirection: 'row',
@@ -117,21 +126,23 @@ const styles = StyleSheet.create({
   progress: {
     marginTop: 2,
   },
+  status: {
+    height: 20,
+    justifyContent: 'center',
+  },
+  statusText: {
+    fontSize: 12,
+    color: htzTokens.colors.outline,
+    textAlign: 'center',
+  },
+  statusWarning: {
+    color: htzTokens.colors.warning,
+  },
   time: {
     fontSize: 12,
     fontVariant: ['tabular-nums'],
     color: htzTokens.colors.onSurfaceVariant,
     minWidth: 36,
-    textAlign: 'center',
-  },
-  noPreview: {
-    fontSize: 12,
-    color: htzTokens.colors.warning,
-    textAlign: 'center',
-  },
-  loadingPreview: {
-    fontSize: 12,
-    color: htzTokens.colors.outline,
     textAlign: 'center',
   },
 });

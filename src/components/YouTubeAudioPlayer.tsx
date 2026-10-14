@@ -13,6 +13,7 @@ import {
   htzTokens,
 } from '@haritzeiza/htz-react/native';
 
+import { PLAYER_CARD_MIN_HEIGHT } from '@/utils/constants';
 import { formatSeconds } from '@/utils/format';
 
 /**
@@ -22,7 +23,8 @@ import { formatSeconds } from '@/utils/format';
  *   que suena el vídeo real aunque no exista preview MP3.
  * - El reproductor vive oculto (200×200, el mínimo recomendado por la API) y los
  *   controles visibles son los del design system.
- * - Salta la intro (primeros 30 s) en pistas largas, como pide el plan.
+ * - Salta la intro (primeros 30 s) en pistas largas cuando actúa de último
+ *   recurso; si el usuario pide la canción completa, empieza en 0 (`skipIntro`).
  * - Si el vídeo no se puede incrustar, avisa con `onUnavailable` para que la
  *   pantalla caiga al resolver de previews (iTunes).
  *
@@ -39,10 +41,20 @@ const POLL_INTERVAL_MS = 500;
 interface YouTubeAudioPlayerProps {
   videoId: string;
   active: boolean;
+  /**
+   * Salta los primeros 30 s en vídeos largos. Por defecto sí (modo último
+   * recurso); con `false` la reproducción empieza en 0.
+   */
+  skipIntro?: boolean;
   onUnavailable: (reason: string) => void;
 }
 
-export function YouTubeAudioPlayer({ videoId, active, onUnavailable }: YouTubeAudioPlayerProps) {
+export function YouTubeAudioPlayer({
+  videoId,
+  active,
+  skipIntro = true,
+  onUnavailable,
+}: YouTubeAudioPlayerProps) {
   const playerRef = useRef<YoutubeIframeRef | null>(null);
   const seededIntroRef = useRef(false);
   /** Intención del usuario (el botón play/pausa); `active` la modula al salir. */
@@ -63,7 +75,7 @@ export function YouTubeAudioPlayer({ videoId, active, onUnavailable }: YouTubeAu
           setCurrentTime(time || 0);
           setDuration(total || 0);
           // Salta la intro una sola vez por vídeo, en pistas largas.
-          if (!seededIntroRef.current && total > INTRO_SKIP_MIN_DURATION) {
+          if (skipIntro && !seededIntroRef.current && total > INTRO_SKIP_MIN_DURATION) {
             seededIntroRef.current = true;
             ref.seekTo(INTRO_SKIP_SECONDS, true);
             setCurrentTime(INTRO_SKIP_SECONDS);
@@ -74,7 +86,7 @@ export function YouTubeAudioPlayer({ videoId, active, onUnavailable }: YouTubeAu
         });
     }, POLL_INTERVAL_MS);
     return () => clearInterval(interval);
-  }, [shouldPlay]);
+  }, [shouldPlay, skipIntro]);
 
   const handleStateChange = useCallback((state: PLAYER_STATES) => {
     if (state === PLAYER_STATES.ENDED) {
@@ -187,6 +199,9 @@ const styles = StyleSheet.create({
     paddingVertical: 12,
     paddingHorizontal: htzTokens.spacing.md,
     gap: 8,
+    // Mismo alto que la tarjeta de preview: al alternar entre ellas el deck
+    // no cambia de tamaño.
+    minHeight: PLAYER_CARD_MIN_HEIGHT,
   },
   row: {
     flexDirection: 'row',

@@ -24,6 +24,8 @@ export interface SearchTerms {
 }
 
 const cache = new Map<string, string | null>();
+/** Búsquedas en curso: si se pide el mismo track dos veces a la vez, se comparte. */
+const inFlight = new Map<string, Promise<string | null>>();
 
 // ------------------------------------------------------------------ limpieza
 
@@ -155,44 +157,54 @@ export async function resolvePreviewUrl(track: Track): Promise<string | null> {
   if (track.previewUrl) return track.previewUrl;
 
   const key = `${track.title.toLowerCase()}|${track.artist.toLowerCase()}`;
-  if (cache.has(key)) return cache.get(key) ?? null;
+  const cached = cache.get(key);
+  if (cached !== undefined) return cached;
 
+  const running = inFlight.get(key);
+  if (running) return running;
+
+  const promise = searchAllSources(track)
+    .then((url) => {
+      cache.set(key, url);
+      return url;
+    })
+    .finally(() => {
+      inFlight.delete(key);
+    });
+
+  inFlight.set(key, promise);
+  return promise;
+}
+
+/** Recorre las fuentes en orden: Deezer (precisa → suelta) y luego iTunes. */
+async function searchAllSources(track: Track): Promise<string | null> {
   for (const terms of buildSearchTerms(track)) {
     try {
       const precise = await searchDeezer(terms.artist, terms.title, true);
-      if (precise) {
-        cache.set(key, precise);
-        return precise;
-      }
+      if (precise) return precise;
     } catch {
       // Sin red o sin respuesta: se prueba la siguiente fuente.
     }
 
     try {
       const loose = await searchDeezer(terms.artist, terms.title, false);
-      if (loose) {
-        cache.set(key, loose);
-        return loose;
-      }
+      if (loose) return loose;
     } catch {
       // Siguiente.
     }
 
     try {
       const itunes = await searchItunes(terms.artist, terms.title);
-      if (itunes) {
-        cache.set(key, itunes);
-        return itunes;
-      }
+      if (itunes) return itunes;
     } catch {
       // Siguiente.
     }
   }
 
-  cache.set(key, null);
   return null;
 }
 
 export function clearPreviewCache(): void {
   cache.clear();
+  inFlight.clear();
 }

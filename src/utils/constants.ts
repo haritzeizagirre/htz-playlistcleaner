@@ -15,6 +15,13 @@ export const SWIPE_THRESHOLD_RATIO = 0.28;
 /** Velocidad (px/s) que dispensa del umbral al deslizar rápido. */
 export const SWIPE_MIN_VELOCITY = 900;
 
+/**
+ * Alto mínimo de las tarjetas de reproductor (preview y vídeo). Al mantenerlo
+ * igual en ambas, el deck no cambia de tamaño al alternar entre ellas: ese
+ * salto de layout se percibía como un pequeño "zoom" en cada canción.
+ */
+export const PLAYER_CARD_MIN_HEIGHT = 120;
+
 /** Claves para almacenamiento seguro (SecureStore).
  *  OJO: SecureStore solo admite alfanuméricos, '.', '-' y '_' (nada de '/'). */
 export const STORAGE_KEYS = {
