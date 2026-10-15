@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { FlatList, StyleSheet, Text, View } from 'react-native';
-import { router, useLocalSearchParams } from 'expo-router';
+import { router, useFocusEffect, useLocalSearchParams } from 'expo-router';
+import { useAudioPlayerStatus } from 'expo-audio';
+import { Pause, Play } from 'lucide-react-native';
 
 import {
   HtzAlert,
@@ -10,13 +12,18 @@ import {
   htzTokens,
 } from '@haritzeiza/htz-react/native';
 
+import { AudioPlayer } from '@/components/AudioPlayer';
 import { Screen } from '@/components/Screen';
 import { ScreenHeader } from '@/components/ScreenHeader';
 import { TrackRow } from '@/components/TrackRow';
+import { YouTubeAudioPlayer } from '@/components/YouTubeAudioPlayer';
+import { resolvePreviewUrl } from '@/services/audio/previewResolver';
+import { soundManager } from '@/services/audio/soundManager';
 import type { Track } from '@/services/interfaces';
 import { getMusicService } from '@/services/registry';
 import { useAuthStore } from '@/store/useAuthStore';
 import { useCleanerStore } from '@/store/useCleanerStore';
+import { YOUTUBE_VIDEO_ID_PATTERN } from '@/utils/constants';
 import { humanizeMusicError } from '@/utils/errors';
 
 /** Número de canciones semilla que alimentan las propuestas. */
@@ -39,6 +46,15 @@ export default function DiscoveryScreen() {
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [applying, setApplying] = useState(false);
   const [lastAdded, setLastAdded] = useState<number | null>(null);
+
+  // Reproducción de una propuesta antes de añadirla (igual que en la
+  // limpieza): preview MP3 y, como último recurso, el vídeo de YouTube.
+  const [playingId, setPlayingId] = useState<string | null>(null);
+  const [preview, setPreview] = useState<{ trackId: string; url: string | null } | null>(null);
+  const [ytPlaying, setYtPlaying] = useState(true);
+  const [ytFailedTrackId, setYtFailedTrackId] = useState<string | null>(null);
+  const [isFocused, setIsFocused] = useState(true);
+  const playerStatus = useAudioPlayerStatus(soundManager.getPlayer());
 
   useEffect(() => {
     if (!playlistId || !provider) return;
@@ -80,6 +96,85 @@ export default function DiscoveryScreen() {
     [recommendations, selectedIds]
   );
 
+  const playingTrack = useMemo(
+    () => (recommendations ?? []).find((track) => track.id === playingId) ?? null,
+    [recommendations, playingId]
+  );
+  const previewReady = preview !== null && preview.trackId === playingTrack?.id;
+  const previewUrl = previewReady && preview ? preview.url : null;
+  const previewLoading = playingTrack !== null && !previewReady;
+
+  const isRealYouTubeTrack =
+    playingTrack?.provider === 'youtube' && YOUTUBE_VIDEO_ID_PATTERN.test(playingTrack.id);
+  const canUseYouTubePlayer = isRealYouTubeTrack && playingTrack?.id !== ytFailedTrackId;
+  // El iframe es el último recurso (el resolver no encontró preview MP3).
+  const useYouTubePlayer = canUseYouTubePlayer && previewReady && previewUrl === null;
+
+  // Pausa el audio al abandonar la pantalla (igual que en la limpieza).
+  useFocusEffect(
+    useCallback(() => {
+      setIsFocused(true);
+      return () => {
+        setIsFocused(false);
+        soundManager.pause();
+      };
+    }, [])
+  );
+
+  // Resuelve el preview de la canción elegida y la reproduce.
+  useEffect(() => {
+    if (!isFocused || !playingTrack) return;
+    let cancelled = false;
+    const track = playingTrack;
+
+    (async () => {
+      const url = await resolvePreviewUrl(track);
+      if (cancelled) return;
+      setPreview({ trackId: track.id, url });
+      if (useYouTubePlayer) {
+        // Suena el vídeo del iframe: el reproductor MP3 calla.
+        soundManager.pause();
+        return;
+      }
+      if (url) soundManager.load(url);
+      else soundManager.pause();
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [playingTrack, isFocused, useYouTubePlayer]);
+
+  const handleTogglePlay = useCallback(
+    (track: Track) => {
+      if (playingId === track.id) {
+        // El vídeo incrustado falló antes: este toque lo reintenta.
+        if (ytFailedTrackId === track.id) {
+          setYtFailedTrackId(null);
+          setYtPlaying(true);
+          return;
+        }
+        // Misma canción: play/pausa (MP3 o iframe según el modo activo).
+        if (useYouTubePlayer) setYtPlaying((value) => !value);
+        else soundManager.toggle();
+        return;
+      }
+      // Otra canción: corta lo que estuviera sonando y prepara la nueva.
+      soundManager.pause();
+      setPreview(null);
+      setYtPlaying(true);
+      setPlayingId(track.id);
+    },
+    [playingId, useYouTubePlayer, ytFailedTrackId]
+  );
+
+  const stopPlayback = useCallback(() => {
+    soundManager.pause();
+    setPlayingId(null);
+    setPreview(null);
+    setYtPlaying(true);
+  }, []);
+
   const toggleSelection = useCallback((trackId: string) => {
     setLastAdded(null);
     setSelectedIds((current) =>
@@ -105,11 +200,17 @@ export default function DiscoveryScreen() {
   };
 
   const handleRetry = () => {
+    stopPlayback();
     setRecommendations(null);
     setError(null);
     setSelectedIds([]);
     setLastAdded(null);
     setReloadKey((key) => key + 1);
+  };
+
+  const handleBack = () => {
+    soundManager.pause();
+    router.back();
   };
 
   const isLoading = recommendations === null && !error;
@@ -135,14 +236,15 @@ export default function DiscoveryScreen() {
       <ScreenHeader
         title="Añadir canciones parecidas"
         subtitle={playlistName}
-        onBack={() => router.back()}
+        onBack={handleBack}
       />
 
       <View style={styles.introBox}>
         <HtzAlert variant="info" title="Canciones parecidas">
           {basedOnKept
             ? `Propuestas parecidas a las canciones que conservaste de «${playlistName}».`
-            : `Propuestas parecidas a las que ya suenan en «${playlistName}».`}
+            : `Propuestas parecidas a las que ya suenan en «${playlistName}».`}{' '}
+          Escúchalas antes de añadirlas con el botón de reproducir.
         </HtzAlert>
         {lastAdded !== null ? (
           <HtzAlert variant="success" title="Añadidas a la playlist">
@@ -173,9 +275,43 @@ export default function DiscoveryScreen() {
           keyExtractor={(item) => item.id}
           renderItem={({ item }) => {
             const selected = selectedIds.includes(item.id);
+            const isCurrent = playingId === item.id;
+            const rowLoading = isCurrent && previewLoading;
+            // El icono sigue al reproductor real: MP3 (soundManager) o iframe.
+            const rowPlaying =
+              isCurrent && (useYouTubePlayer ? ytPlaying : playerStatus.playing);
+            // Solo se deshabilita si no hay nada que reproducir ni reintentar:
+            // mientras carga, o en pistas sin preview ni vídeo incrustable.
+            const rowDisabled =
+              isCurrent &&
+              (previewLoading || (previewReady && previewUrl === null && !isRealYouTubeTrack));
             return (
               <TrackRow
                 track={item}
+                left={
+                  <HtzButton
+                    variant="secondary"
+                    size="sm"
+                    disabled={rowDisabled}
+                    loading={rowLoading}
+                    accessibilityLabel={
+                      rowLoading
+                        ? `Cargando ${item.title}`
+                        : rowPlaying
+                          ? `Pausar ${item.title}`
+                          : `Escuchar ${item.title}`
+                    }
+                    onPress={() => handleTogglePlay(item)}
+                    style={styles.playButton}
+                    icon={
+                      rowLoading ? undefined : rowPlaying ? (
+                        <Pause size={16} color={htzTokens.colors.onSurface} />
+                      ) : (
+                        <Play size={16} color={htzTokens.colors.onSurface} />
+                      )
+                    }
+                  />
+                }
                 right={
                   <>
                     {selected ? <HtzBadge variant="success" label="Elegida" /> : null}
@@ -201,6 +337,31 @@ export default function DiscoveryScreen() {
           showsVerticalScrollIndicator={false}
         />
       )}
+
+      {/* Reproductor de la propuesta en escucha: mismo patrón que la limpieza
+          (preview MP3 y, como último recurso, el vídeo de YouTube). */}
+      {playingTrack ? (
+        <View style={styles.playerBox}>
+          {useYouTubePlayer ? (
+            <YouTubeAudioPlayer
+              key={playingTrack.id}
+              videoId={playingTrack.id}
+              active={isFocused}
+              playing={ytPlaying}
+              onPlayingChange={setYtPlaying}
+              onUnavailable={() => setYtFailedTrackId(playingTrack.id)}
+            />
+          ) : (
+            <AudioPlayer previewUrl={previewUrl} loading={previewLoading} />
+          )}
+          {playingTrack.id === ytFailedTrackId ? (
+            <Text style={styles.playerWarning}>
+              No se pudo reproducir el vídeo completo. Toca el botón de reproducir para
+              reintentar.
+            </Text>
+          ) : null}
+        </View>
+      ) : null}
 
       <View style={styles.footer}>
         <HtzButton
@@ -236,6 +397,23 @@ const styles = StyleSheet.create({
   },
   separator: {
     height: htzTokens.spacing.sm,
+  },
+  playButton: {
+    width: 32,
+    height: 32,
+    borderRadius: htzTokens.radius.full,
+    paddingHorizontal: 0,
+  },
+  playerBox: {
+    paddingHorizontal: htzTokens.spacing.md,
+    paddingTop: htzTokens.spacing.sm,
+  },
+  playerWarning: {
+    fontSize: 12,
+    lineHeight: 16,
+    color: htzTokens.colors.warning,
+    textAlign: 'center',
+    paddingTop: htzTokens.spacing.xs,
   },
   footer: {
     paddingHorizontal: htzTokens.spacing.md,

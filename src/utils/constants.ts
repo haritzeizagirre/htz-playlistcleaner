@@ -27,3 +27,6 @@ export const PLAYER_CARD_MIN_HEIGHT = 120;
 export const STORAGE_KEYS = {
   authTokens: 'playlist-cleaner.auth-tokens',
 } as const;
+
+/** Un ID de vídeo real de YouTube tiene 11 caracteres (los mocks no). */
+export const YOUTUBE_VIDEO_ID_PATTERN = /^[A-Za-z0-9_-]{11}$/;

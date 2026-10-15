@@ -14,7 +14,7 @@ Plan de desarrollo completo: [`plan_de_desarrollo_playlist_cleaner.md`](./plan_d
 | 2 | ✅ Implementada (pendiente de probar en device) | Spotify real: OAuth PKCE + Web API + SecureStore |
 | 3 | ✅ Implementada (verificada en emulador) | YouTube Music real: Google Sign-In + YouTube Data API v3 |
 | 4 | ✅ Base lista | Batching/descarte optimista + resumen antes de confirmar |
-| 5 | ✅ Base lista | Añadir canciones parecidas: propuestas por artistas semilla (real en Spotify y YouTube) |
+| 5 | ✅ Base lista | Añadir canciones parecidas: propuestas por artistas semilla y colaboradores, con preview antes de añadir (real en Spotify y YouTube) |
 
 ## Stack
 
@@ -66,6 +66,13 @@ npm run lint            # expo lint
 > `haritz-components-react/node_modules`: son consecuencia esperada del enlace local y no
 > afectan al bundle de la app.
 
+> **Parche de dependencia (`patch-package`).** En `patches/` hay un parche local de
+> `react-native-youtube-iframe` que arregla la regresión de play/pausa de la serie 2.4.x
+> ([issue #376](https://github.com/LonelyCpp/react-native-youtube-iframe/issues/376)):
+> sin él, el «modo canción completa» no arranca ni se detiene. Se aplica solo, vía el script
+> `postinstall` (`patch-package`). No quites ese script ni la carpeta `patches/`, y procura
+> que los builds ejecuten `npm install` (con devDependencies).
+
 ## Hub de apps (publicación)
 
 La app forma parte del Hub personal (`haritzeizagirre/htz-hub`). Para publicar una
@@ -98,8 +105,10 @@ Al abrir el Hub, la app aparecerá como **Descargar** (o **Actualizar**).
   borrado/añadido por lotes de 100 con fallback individual, reintento en 401/429.
 - **Previews**: `preview_url` está deprecado en la Web API; el `PreviewResolver`
   (iTunes Search) actúa como fuente principal cuando llega `null`.
-- **Recomendaciones**: `/search` por artistas de las canciones semilla
-  (`/recommendations` ya no está disponible para apps nuevas).
+- **Recomendaciones**: `/search` por artistas de las canciones semilla, sus
+  colaboradores (feat./&) y etiquetas de género, con tope por artista para no repetir
+  siempre el mismo (`/recommendations` y `/related-artists` ya no están disponibles para
+  apps nuevas).
 
 > ⚠️ **El login real necesita un development build** (Expo Go no puede registrar el
 > esquema de redirección). Compila con `npx expo run:android` y prueba el login real.
@@ -110,13 +119,20 @@ Al abrir el Hub, la app aparecerá como **Descargar** (o **Actualizar**).
 - **Auth**: Google Sign-In nativo (`@react-native-google-signin/google-signin`) con el scope
   `https://www.googleapis.com/auth/youtube`; sesión rehidratable con `signInSilently`.
 - **Adapter**: `playlists.list(mine=true)`, `playlistItems.list` paginado, duraciones reales vía
-  `/videos`, borrado/inserción por item (50 unidades de cuota cada uno) y recomendaciones por
-  canal con `/search` (`relatedToVideoId` está deprecado).
+  `/videos`, borrado/inserción por item (50 unidades de cuota cada uno) y recomendaciones con
+  `/search` por artistas semilla, colaboradores y género (etiquetas de `/videos?part=snippet`),
+  resolviendo el artista real aunque el vídeo lo suba un sello. Hasta 8 búsquedas por carga
+  (800 unidades) y tope de 3 canciones por artista. `relatedToVideoId` está deprecado.
 - **Cuota**: 10.000 unidades/día. El flujo agrupa los borrados al confirmar en el resumen.
 - **Previews**: YouTube no da MP3; el resolver de iTunes cubre los fragmentos de 30 s.
 - **Canción completa**: en pistas de YouTube con vídeo real, el reproductor permite alternar entre
   el preview de 30 s y el vídeo completo (reutiliza el iframe oculto, sin coste de cuota). Al pedirlo
   expresamente, la reproducción empieza en 0; como último recurso (sin preview) sigue saltando la intro.
+
+  > El iframe carga el HTML local con `baseUrlOverride` hacia un origen https propio: YouTube rechaza
+  > los embeds sin Origin/Referer válido (error 153 «Video Player Configuration Error») y con
+  > `useLocalHTML` a secas la página queda con origen opaco. Si un vídeo concreto no permite inserción,
+  > la app vuelve al preview con aviso y botón de reintento.
 - **Config**: `src/services/youtube/youtubeConfig.ts` (Client ID **Web**) + cliente OAuth
   **Android** (package `com.haritzeiza.playlistcleaner` + SHA-1 del keystore de debug).
 

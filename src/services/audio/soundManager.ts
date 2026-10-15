@@ -157,8 +157,13 @@ class SoundManager {
   /** Salto relativo de ±N segundos desde la posición actual. */
   seekBy(seconds: number): void {
     if (!this.player) return;
-    const target = Math.max(0, this.player.currentTime + seconds);
-    void this.player.seekTo(target);
+    this.seekTo(this.player.currentTime + seconds);
+  }
+
+  /** Salto a un segundo concreto de la pista cargada. */
+  seekTo(seconds: number): void {
+    if (!this.player) return;
+    void this.player.seekTo(Math.max(0, seconds));
   }
 
   stop(): void {

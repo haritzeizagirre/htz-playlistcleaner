@@ -5,6 +5,15 @@ import type {
   PlaylistSummary,
   Track,
 } from '../interfaces';
+import {
+  artistKey,
+  diversifyByArtist,
+  isCoveredArtistKey,
+  primaryArtistName,
+  songKey,
+  splitArtistNames,
+  type RecommendationCandidate,
+} from '../recommendations';
 import { SPOTIFY_API_BASE } from './spotifyConfig';
 
 /**
@@ -16,7 +25,7 @@ import { SPOTIFY_API_BASE } from './spotifyConfig';
  * - DELETE /playlists/{id}/items           body: { items: [{ uri }] }
  * - POST   /playlists/{id}/items           body: { uris: [...] }
  * - GET    /search?q=artist:"X"&type=track (recomendaciones; /recommendations
- *          ya no está disponible para apps nuevas)
+ *          y /related-artists ya no existen para apps nuevas)
  *
  * La cuota se cuida con: paginación mínima, borrado en lotes de 100 y
  * reintento único ante 401/429.
@@ -84,7 +93,19 @@ interface SpotifySearchResponse {
 const PAGE_SIZE = 50;
 const BATCH_SIZE = 100;
 const MAX_RECOMMENDATIONS = 15;
-const MAX_SEED_ARTISTS = 3;
+/** Canciones como máximo por artista: evita monográficos de un solo autor. */
+const MAX_PER_ARTIST = 3;
+/**
+ * Si con ese tope salen menos de estas propuestas (playlist sin
+ * colaboraciones), se relaja el tope para no dejar la lista en tres filas.
+ */
+const MIN_RECOMMENDATIONS = 9;
+const MAX_PER_ARTIST_FILL = 6;
+/** Búsquedas por artistas principales de las semillas. */
+const MAX_SEED_QUERIES = 3;
+/** Búsquedas por los demás artistas de cada pista (colaboraciones). */
+const MAX_COLLAB_QUERIES = 5;
+const MAX_RESULTS_PER_QUERY = 10;
 
 function chunk<T>(items: T[], size: number): T[][] {
   const groups: T[][] = [];
@@ -337,46 +358,100 @@ export class SpotifyAdapter implements IMusicService {
 
   // ------------------------------------------------------------- descubrir
 
+  /**
+   * Propuestas de canciones parecidas.
+   *
+   * `/recommendations` y `/artists/{id}/related-artists` ya no existen para
+   * apps nuevas, así que se busca por texto: primero por el artista principal
+   * de cada semilla y después por los colaboradores (el resto de artistas de
+   * la pista), con tope de canciones por artista para evitar monográficos.
+   */
   async getRecommendations(seedTrackIds: string[]): Promise<Track[]> {
-    const artistNames: string[] = [];
+    const seeds = seedTrackIds
+      .map((seedId) => this.trackCache.get(seedId))
+      .filter((track): track is Track => Boolean(track));
+    if (seeds.length === 0) return [];
 
-    for (const seedId of seedTrackIds) {
-      const cached = this.trackCache.get(seedId);
-      if (!cached) continue;
-      const primaryArtist = cached.artist.split(',')[0]?.trim();
-      if (primaryArtist && !artistNames.includes(primaryArtist)) {
-        artistNames.push(primaryArtist);
+    // Artistas principales de las semillas (una búsqueda por artista).
+    const queriedKeys = new Set<string>();
+    const artistQueries: string[] = [];
+    const pendingCollabs: string[] = [];
+    const pendingKeys = new Set<string>();
+
+    const collectCollabs = (raw: string) => {
+      for (const name of splitArtistNames(raw)) {
+        const key = artistKey(name);
+        if (!key || isCoveredArtistKey(key, queriedKeys) || pendingKeys.has(key)) continue;
+        pendingKeys.add(key);
+        pendingCollabs.push(name);
       }
-      if (artistNames.length >= MAX_SEED_ARTISTS) break;
+    };
+
+    const seenIds = new Set(seedTrackIds);
+    const seenTitles = new Set<string>();
+
+    for (const seed of seeds) {
+      const primary = primaryArtistName(seed.artist);
+      if (primary && artistQueries.length < MAX_SEED_QUERIES) {
+        const key = artistKey(primary);
+        if (key && !queriedKeys.has(key)) {
+          queriedKeys.add(key);
+          artistQueries.push(primary);
+          // La misma canción en otra versión/álbum no es una propuesta.
+          seenTitles.add(`${key}|${songKey(seed.title)}`);
+        }
+      }
+      // Resto de artistas de la pista (colaboraciones). `collectCollabs`
+      // descarta lo que ya está cubierto por el artista principal.
+      collectCollabs(seed.artist);
     }
 
-    const recommendations: Track[] = [];
-    const seen = new Set<string>(seedTrackIds);
+    const candidates: RecommendationCandidate[] = [];
 
-    for (const artist of artistNames) {
-      const query = encodeURIComponent(`artist:"${artist}"`);
+    const search = async (queryText: string) => {
+      const query = encodeURIComponent(`artist:"${queryText}"`);
       let searchPage: SpotifySearchResponse;
       try {
         searchPage = await this.request<SpotifySearchResponse>(
-          `/search?q=${query}&type=track&limit=10`
+          `/search?q=${query}&type=track&limit=${MAX_RESULTS_PER_QUERY}`
         );
       } catch {
-        continue;
+        return; // Una búsqueda caída no debe tumbar toda la pantalla.
       }
 
       for (const item of searchPage.tracks?.items ?? []) {
         // La búsqueda no admite episodes; descarta locales y duplicados.
-        if (!item.id || item.is_local || item.type !== 'track' || seen.has(item.id)) {
+        if (!item.id || item.is_local || item.type !== 'track' || seenIds.has(item.id)) {
           continue;
         }
-        seen.add(item.id);
-        recommendations.push(this.mapItem(item));
-        if (recommendations.length >= MAX_RECOMMENDATIONS) {
-          return recommendations;
-        }
-      }
-    }
+        const primaryKey = artistKey(item.artists?.[0]?.name ?? '');
+        if (!primaryKey) continue;
+        const dedupeKey = `${primaryKey}|${songKey(item.name)}`;
+        if (seenTitles.has(dedupeKey)) continue;
+        seenIds.add(item.id);
+        seenTitles.add(dedupeKey);
 
-    return recommendations;
+        const track = this.mapItem(item);
+        candidates.push({ key: primaryKey, track });
+        collectCollabs(track.artist);
+      }
+    };
+
+    // Ronda 1: artistas principales. Ronda 2: colaboradores (los de las
+    // semillas primero; después, los descubiertos en los resultados). Los
+    // que ya se buscaron como artista principal no se repiten. En paralelo
+    // para no encadenar llamadas.
+    await Promise.all(artistQueries.map((queryText) => search(queryText)));
+    const collabQueries = pendingCollabs
+      .filter((name) => !queriedKeys.has(artistKey(name)))
+      .slice(0, MAX_COLLAB_QUERIES);
+    await Promise.all(collabQueries.map((queryText) => search(queryText)));
+
+    const pick = (maxPerArtist: number) =>
+      diversifyByArtist(candidates, { maxPerArtist, maxTotal: MAX_RECOMMENDATIONS });
+    const diversified = pick(MAX_PER_ARTIST);
+    // Sin colaboraciones suficientes se relaja el tope por artista: mejor más
+    // canciones del propio artista que tres filas.
+    return diversified.length >= MIN_RECOMMENDATIONS ? diversified : pick(MAX_PER_ARTIST_FILL);
   }
 }

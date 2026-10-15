@@ -9,13 +9,15 @@ import type { Track } from '@/services/interfaces';
 interface TrackRowProps {
   track: Track;
   subtitle?: string;
+  left?: ReactNode;
   right?: ReactNode;
 }
 
 /** Fila de canción reutilizable (resumen, descubrimiento...). */
-export function TrackRow({ track, subtitle, right }: TrackRowProps) {
+export function TrackRow({ track, subtitle, left, right }: TrackRowProps) {
   return (
     <View style={styles.row}>
+      {left ? <View style={styles.left}>{left}</View> : null}
       <Image
         source={{ uri: track.coverUrl }}
         style={styles.cover}
@@ -27,7 +29,8 @@ export function TrackRow({ track, subtitle, right }: TrackRowProps) {
           {track.title}
         </Text>
         <Text style={styles.subtitle} numberOfLines={1} ellipsizeMode="tail">
-          {subtitle ?? `${track.artist} · ${track.album}`}
+          {/* YouTube no expone álbum: sin la segunda parte no debe quedar "·". */}
+          {subtitle ?? [track.artist, track.album].filter(Boolean).join(' · ')}
         </Text>
       </View>
       {right ? <View style={styles.right}>{right}</View> : null}
@@ -65,6 +68,11 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: htzTokens.colors.onSurfaceVariant,
     marginTop: 2,
+  },
+  left: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
   },
   right: {
     flexDirection: 'row',

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 import { router, useFocusEffect, useLocalSearchParams } from 'expo-router';
-import { Check, Headphones, Music2, Undo2, X } from 'lucide-react-native';
+import { Check, Headphones, Music2, RefreshCw, Undo2, X } from 'lucide-react-native';
 
 import {
   HtzAlert,
@@ -25,11 +25,9 @@ import { soundManager } from '@/services/audio/soundManager';
 import { getMusicService } from '@/services/registry';
 import { useAuthStore } from '@/store/useAuthStore';
 import { useCleanerStore } from '@/store/useCleanerStore';
+import { YOUTUBE_VIDEO_ID_PATTERN } from '@/utils/constants';
 import { humanizeMusicError } from '@/utils/errors';
 import { providerLabel } from '@/utils/format';
-
-/** Un ID de vídeo real de YouTube tiene 11 caracteres (los mocks no). */
-const YOUTUBE_VIDEO_ID_PATTERN = /^[A-Za-z0-9_-]{11}$/;
 
 export default function CleanerScreen() {
   const params = useLocalSearchParams<{ playlistId?: string; playlistName?: string }>();
@@ -57,8 +55,11 @@ export default function CleanerScreen() {
   const [reloadKey, setReloadKey] = useState(0);
   const [preview, setPreview] = useState<{ trackId: string; url: string | null } | null>(null);
   const [ytFailedTrackId, setYtFailedTrackId] = useState<string | null>(null);
-  /** El usuario prefiere escuchar la canción completa (iframe) en vez del preview. */
-  const [preferFullSong, setPreferFullSong] = useState(false);
+  /**
+   * Canción para la que el usuario pidió el vídeo completo. Se guarda el ID (y no
+   * un boolean) para que el modo caduque solo al pasar a otra tarjeta.
+   */
+  const [fullSongTrackId, setFullSongTrackId] = useState<string | null>(null);
   const [isFocused, setIsFocused] = useState(true);
   const [dismissedAt, setDismissedAt] = useState<number | null>(null);
   const deckRef = useRef<CardDeckHandle>(null);
@@ -108,15 +109,32 @@ export default function CleanerScreen() {
 
   const isRealYouTubeTrack =
     currentTrack?.provider === 'youtube' && YOUTUBE_VIDEO_ID_PATTERN.test(currentTrack.id);
-  const canUseYouTubePlayer = isRealYouTubeTrack && currentTrack?.id !== ytFailedTrackId;
+  /** El usuario pidió el vídeo completo para la canción actual (caduca al cambiar). */
+  const preferFullSong = currentTrackId !== null && fullSongTrackId === currentTrackId;
+  /** El intento de vídeo completo con la canción actual ya falló (se puede reintentar). */
+  const ytFailedForCurrent = isRealYouTubeTrack && currentTrack?.id === ytFailedTrackId;
   // El resolver multi-fuente (Deezer/iTunes) no encontró nada: el iframe es el último recurso.
   const resolverFoundNothing = previewReady && !previewUrl;
   // El iframe se usa en dos casos: último recurso (sin preview) o petición explícita
-  // del usuario de escuchar la canción completa.
-  const useYouTubePlayer = canUseYouTubePlayer && (preferFullSong || resolverFoundNothing);
-  // El toggle no aparece cuando el resolver se quedó sin preview: ahí el iframe es
-  // la única opción y no hay vuelta al preview.
-  const showFullSongToggle = canUseYouTubePlayer && !resolverFoundNothing;
+  // del usuario de escuchar la canción completa. Tras un fallo no se reintenta solo.
+  const useYouTubePlayer =
+    isRealYouTubeTrack && !ytFailedForCurrent && (preferFullSong || resolverFoundNothing);
+  // El botón se mantiene mientras quede algo que hacer: alternar con el preview
+  // existente o reintentar el vídeo tras un fallo.
+  const showFullSongToggle =
+    isRealYouTubeTrack && (!resolverFoundNothing || ytFailedForCurrent);
+
+  /** Tras un fallo, el botón reintenta el vídeo en vez de alternar al preview. */
+  const handleFullSongPress = () => {
+    if (!currentTrackId) return;
+    if (ytFailedForCurrent) {
+      // Reintento limpio: quita el fallo y vuelve al modo vídeo.
+      setYtFailedTrackId(null);
+      setFullSongTrackId(currentTrackId);
+      return;
+    }
+    setFullSongTrackId((value) => (value === currentTrackId ? null : currentTrackId));
+  };
 
   // Reproducción automática del audio de la tarjeta visible.
   useEffect(() => {
@@ -237,8 +255,13 @@ export default function CleanerScreen() {
       />
 
       <View style={styles.progressBox}>
-        <HtzProgressBar value={progress} height={6} />
-        <Text style={styles.progressText}>
+        {/* La barra se reparte el ancho sobrante para que el contador se vea
+            siempre completo: antes ocupaba el 100% y lo empujaba fuera de la
+            pantalla (solo se veía un «1» cortado pegado al borde derecho). */}
+        <View style={styles.progressBarWrap}>
+          <HtzProgressBar value={progress} height={6} />
+        </View>
+        <Text style={styles.progressText} numberOfLines={1}>
           {reviewed} / {total} revisadas
         </Text>
       </View>
@@ -291,32 +314,47 @@ export default function CleanerScreen() {
           </View>
 
           <View style={styles.playerBox}>
-            {/* El hueco se reserva siempre que el iframe sea posible: el botón
-                aparece/desaparece según la canción y el deck no debe moverse. */}
-            {canUseYouTubePlayer ? (
+            {/* El hueco se reserva en todas las pistas de YouTube: el botón
+                aparece/desaparece según el estado y el deck no debe moverse. */}
+            {isRealYouTubeTrack ? (
               <View style={styles.fullSongToggle}>
                 {showFullSongToggle ? (
                   <HtzButton
                     variant="ghost"
                     size="sm"
                     accessibilityLabel={
-                      preferFullSong
-                        ? 'Volver al preview de 30 segundos'
-                        : 'Escuchar la canción completa'
+                      ytFailedForCurrent
+                        ? 'Reintentar canción completa'
+                        : preferFullSong
+                          ? 'Volver al preview de 30 segundos'
+                          : 'Escuchar la canción completa'
                     }
-                    onPress={() => setPreferFullSong((value) => !value)}
+                    onPress={handleFullSongPress}
                     icon={
-                      preferFullSong ? (
+                      ytFailedForCurrent ? (
+                        <RefreshCw size={16} color={htzTokens.colors.onSurface} />
+                      ) : preferFullSong ? (
                         <Music2 size={16} color={htzTokens.colors.onSurfaceVariant} />
                       ) : (
                         <Headphones size={16} color={htzTokens.colors.onSurface} />
                       )
                     }
                   >
-                    {preferFullSong ? 'Volver al preview de 30 s' : 'Escuchar la canción completa'}
+                    {ytFailedForCurrent
+                      ? 'Reintentar canción completa'
+                      : preferFullSong
+                        ? 'Volver al preview de 30 s'
+                        : 'Escuchar la canción completa'}
                   </HtzButton>
                 ) : null}
               </View>
+            ) : null}
+
+            {ytFailedForCurrent ? (
+              <Text style={styles.fullSongError}>
+                No se pudo reproducir el vídeo completo. Puede que no permita reproducción
+                incrustada.
+              </Text>
             ) : null}
 
             {useYouTubePlayer && currentTrack ? (
@@ -381,10 +419,14 @@ const styles = StyleSheet.create({
     paddingHorizontal: htzTokens.spacing.md,
     paddingBottom: htzTokens.spacing.sm,
   },
+  progressBarWrap: {
+    flex: 1,
+  },
   progressText: {
     fontSize: 11,
     color: htzTokens.colors.onSurfaceVariant,
     fontVariant: ['tabular-nums'],
+    flexShrink: 0,
   },
   deckContainer: {
     flex: 1,
@@ -400,6 +442,13 @@ const styles = StyleSheet.create({
     // Hueco fijo (botón sm 32 + separación): reserva el espacio aunque el
     // botón esté oculto, para que el deck no cambie de alto.
     height: 36,
+  },
+  fullSongError: {
+    fontSize: 12,
+    lineHeight: 16,
+    color: htzTokens.colors.warning,
+    textAlign: 'center',
+    paddingBottom: htzTokens.spacing.xs,
   },
   controls: {
     flexDirection: 'row',

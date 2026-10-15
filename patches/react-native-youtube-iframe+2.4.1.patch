@@ -1,0 +1,44 @@
+diff --git a/node_modules/react-native-youtube-iframe/lib/commonjs/YoutubeIframe.js b/node_modules/react-native-youtube-iframe/lib/commonjs/YoutubeIframe.js
+index 0be2dad..b761bcf 100644
+--- a/node_modules/react-native-youtube-iframe/lib/commonjs/YoutubeIframe.js
++++ b/node_modules/react-native-youtube-iframe/lib/commonjs/YoutubeIframe.js
+@@ -55,6 +55,15 @@ const YoutubeIframe = (props, ref) => {
+       meta
+     });
+     webViewRef.current.postMessage(message);
++
++    // Parche Playlist Cleaner (regresión 2.4.x, issue #376): el postMessage no
++    // aplica play/pausa; se inyectan directamente en el player.
++    if (eventName === 'pauseVideo') {
++      webViewRef.current.injectJavaScript('try{if(window.player&&player.pauseVideo){player.pauseVideo();}}catch(e){} true;');
++    }
++    if (eventName === 'playVideo') {
++      webViewRef.current.injectJavaScript('try{if(window.player&&player.playVideo){player.playVideo();}}catch(e){} true;');
++    }
+   }, [playerReady]);
+   (0, _react.useImperativeHandle)(ref, () => ({
+     getVideoUrl: () => {
+diff --git a/node_modules/react-native-youtube-iframe/src/YoutubeIframe.js b/node_modules/react-native-youtube-iframe/src/YoutubeIframe.js
+index 4bbf487..28bde4a 100644
+--- a/node_modules/react-native-youtube-iframe/src/YoutubeIframe.js
++++ b/node_modules/react-native-youtube-iframe/src/YoutubeIframe.js
+@@ -63,6 +63,19 @@ const YoutubeIframe = (props, ref) => {
+ 
+       const message = JSON.stringify({eventName, meta});
+       webViewRef.current.postMessage(message);
++
++      // Parche Playlist Cleaner (regresión 2.4.x, issue #376): el postMessage no
++      // aplica play/pausa; se inyectan directamente en el player.
++      if (eventName === 'pauseVideo') {
++        webViewRef.current.injectJavaScript(
++          'try{if(window.player&&player.pauseVideo){player.pauseVideo();}}catch(e){} true;',
++        );
++      }
++      if (eventName === 'playVideo') {
++        webViewRef.current.injectJavaScript(
++          'try{if(window.player&&player.playVideo){player.playVideo();}}catch(e){} true;',
++        );
++      }
+     },
+     [playerReady],
+   );

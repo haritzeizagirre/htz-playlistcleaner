@@ -5,10 +5,10 @@ import { FastForward, Pause, Play, Rewind } from 'lucide-react-native';
 import {
   HtzButton,
   HtzCard,
-  HtzProgressBar,
   htzTokens,
 } from '@haritzeiza/htz-react/native';
 
+import { SeekBar } from '@/components/SeekBar';
 import { soundManager } from '@/services/audio/soundManager';
 import { PLAYER_CARD_MIN_HEIGHT } from '@/utils/constants';
 import { formatSeconds } from '@/utils/format';
@@ -74,11 +74,14 @@ export function AudioPlayer({ previewUrl, loading = false, disabled = false }: A
         <Text style={styles.time}>{formatSeconds(duration)}</Text>
       </View>
 
-      <HtzProgressBar
+      <SeekBar
         value={hasPreview ? progress : 0}
-        variant="primary"
+        duration={duration}
+        onSeek={(seconds) => soundManager.seekTo(seconds)}
+        disabled={controlsDisabled}
         height={6}
         style={styles.progress}
+        accessibilityLabel="Ir a un punto del preview"
       />
 
       {/* Hueco de altura fija: la tarjeta no debe crecer/encoger al cambiar de

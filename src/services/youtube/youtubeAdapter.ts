@@ -1,3 +1,4 @@
+import { cleanArtist } from '../audio/previewResolver';
 import type {
   BulkOperationFailure,
   BulkOperationResult,
@@ -5,6 +6,17 @@ import type {
   PlaylistSummary,
   Track,
 } from '../interfaces';
+import {
+  artistKey,
+  diversifyByArtist,
+  isCoveredArtistKey,
+  pickGenreTags,
+  songKey,
+  splitArtistNames,
+  titleArtistCredit,
+  titleCollaborators,
+  type RecommendationCandidate,
+} from '../recommendations';
 import { YOUTUBE_API_BASE, YOUTUBE_MUSIC_CATEGORY_ID } from './youtubeConfig';
 
 /**
@@ -14,6 +26,7 @@ import { YOUTUBE_API_BASE, YOUTUBE_MUSIC_CATEGORY_ID } from './youtubeConfig';
  * - GET    /playlists?mine=true                 (1 unidad)
  * - GET    /playlistItems?playlistId=...        (1 unidad, paginado de 50)
  * - GET    /videos?part=contentDetails          (1 unidad, duración de 50 vídeos)
+ * - GET    /videos?part=snippet                 (1 unidad, etiquetas de género)
  * - DELETE /playlistItems?id=...                (50 unidades por borrado)
  * - POST   /playlistItems                       (50 unidades por inserción)
  * - GET    /search?q=...&videoCategoryId=10     (100 unidades)
@@ -21,7 +34,8 @@ import { YOUTUBE_API_BASE, YOUTUBE_MUSIC_CATEGORY_ID } from './youtubeConfig';
  * La cuota diaria es de 10.000 unidades por proyecto: el flujo está pensado
  * para borrar en bloque al confirmar (no en cada swipe) precisamente por esto.
  * `relatedToVideoId` está deprecado en la API: las recomendaciones se hacen
- * buscando por el artista/canal de las canciones semilla.
+ * buscando por los artistas de las canciones semilla, sus colaboradores y su
+ * género (ver getRecommendations; hasta 8 búsquedas = 800 unidades por carga).
  */
 
 interface YouTubeTokensProvider {
@@ -71,6 +85,7 @@ interface YouTubePlaylistItem {
 
 interface YouTubeVideo {
   id: string;
+  snippet?: YouTubeSnippet & { tags?: string[] };
   contentDetails?: { duration?: string };
 }
 
@@ -82,7 +97,21 @@ interface YouTubeSearchItem {
 
 const PAGE_SIZE = 50;
 const MAX_RECOMMENDATIONS = 15;
-const MAX_SEED_ARTISTS = 3;
+/** Canciones como máximo por artista: evita monográficos de un solo autor. */
+const MAX_PER_ARTIST = 3;
+/**
+ * Si con ese tope salen menos de estas propuestas (playlist sin colaboradores
+ * ni etiquetas), se relaja el tope para no dejar la lista en tres filas.
+ */
+const MIN_RECOMMENDATIONS = 9;
+const MAX_PER_ARTIST_FILL = 6;
+/** Búsquedas por artistas de las canciones semilla. */
+const MAX_SEED_QUERIES = 3;
+/** Búsquedas por artistas que colaboran en las semillas. */
+const MAX_COLLAB_QUERIES = 3;
+/** Búsquedas por género (etiquetas de las semillas) para traer artistas nuevos. */
+const MAX_TAG_QUERIES = 2;
+const MAX_RESULTS_PER_QUERY = 10;
 
 const delay = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
@@ -364,64 +393,199 @@ export class YouTubeAdapter implements IMusicService {
 
   // ------------------------------------------------------------- descubrir
 
-  async getRecommendations(seedTrackIds: string[]): Promise<Track[]> {
-    // No hay endpoint de "similares" estable (relatedToVideoId está
-    // deprecado): se busca por el canal/artista de las canciones semilla
-    // (los nombres salen de la caché que llena getPlaylistTracks).
-    const artistNames: string[] = [];
-    for (const seedId of seedTrackIds) {
-      const cached = this.trackCache.get(seedId);
-      if (!cached?.artist) continue;
-      const artist = cached.artist.trim();
-      if (artist && !artistNames.includes(artist)) {
-        artistNames.push(artist);
+  /** Etiquetas de los vídeos semilla (1 unidad por cada 50 vídeos). */
+  private async fetchSeedTags(seedTrackIds: string[]): Promise<string[][]> {
+    const tagLists: string[][] = [];
+    for (let i = 0; i < seedTrackIds.length; i += PAGE_SIZE) {
+      const ids = seedTrackIds.slice(i, i + PAGE_SIZE).join(',');
+      if (!ids) continue;
+      const query = this.buildQuery({ part: 'snippet', id: ids });
+      try {
+        const page = await this.request<YouTubeListResponse<YouTubeVideo>>(`/videos?${query}`);
+        for (const video of page.items ?? []) {
+          tagLists.push(video.snippet?.tags ?? []);
+        }
+      } catch {
+        // Sin etiquetas: las búsquedas por género se omiten.
       }
-      if (artistNames.length >= MAX_SEED_ARTISTS) break;
+    }
+    return tagLists;
+  }
+
+  /**
+   * Propuestas de canciones parecidas.
+   *
+   * `relatedToVideoId` está deprecado y las listas "mix" no son accesibles por
+   * API, así que se busca por texto en tres rondas: artistas semilla,
+   * colaboradores (feat./ft./with/& de los títulos) y temas del mismo género
+   * (etiquetas de las semillas). El reparto final es ronda a ronda con tope
+   * por artista, resolviendo el artista real aunque el vídeo lo suba un sello
+   * ("STMPD RCRDS" + "Martin Garrix - Animals" ⇒ Martin Garrix): una playlist
+   * de un solo autor antes devolvía casi solo sus canciones.
+   */
+  async getRecommendations(seedTrackIds: string[]): Promise<Track[]> {
+    const seeds = seedTrackIds
+      .map((seedId) => this.trackCache.get(seedId))
+      .filter((track): track is Track => Boolean(track));
+    if (seeds.length === 0) return [];
+
+    // Canales que son en realidad sellos u otros perfiles: si el título lleva
+    // "Artista - Canción", el artista es ese y no el canal.
+    const channelArtistKeys = new Map<string, string>();
+    const channelArtistNames = new Map<string, string>();
+    const learnChannelArtist = (channelKey: string, rawTitle: string) => {
+      if (!channelKey || channelArtistKeys.has(channelKey)) return;
+      const credit = titleArtistCredit(rawTitle);
+      if (!credit) return;
+      const creditKey = artistKey(credit);
+      if (!creditKey || creditKey.includes(channelKey) || channelKey.includes(creditKey)) return;
+      const [primary] = splitArtistNames(credit);
+      if (!primary) return;
+      channelArtistKeys.set(channelKey, artistKey(primary));
+      channelArtistNames.set(channelKey, primary);
+    };
+    const artistOfChannel = (channelKey: string) =>
+      channelArtistKeys.get(channelKey) || channelKey;
+    const nameOfChannel = (channel: string, channelKey: string) =>
+      (channelArtistNames.get(channelKey) ?? cleanArtist(channel)) || channel;
+
+    for (const seed of seeds) {
+      learnChannelArtist(artistKey(seed.artist), seed.title);
     }
 
-    if (artistNames.length === 0) {
-      return [];
+    // Artistas semilla (normalizados: "X", "X - Topic" y su sello cuentan como uno).
+    const queriedKeys = new Set<string>();
+    const artistQueries: { key: string; name: string }[] = [];
+    for (const seed of seeds) {
+      if (artistQueries.length >= MAX_SEED_QUERIES) break;
+      const channelKey = artistKey(seed.artist);
+      const key = artistOfChannel(channelKey);
+      if (!key || queriedKeys.has(key)) continue;
+      queriedKeys.add(key);
+      artistQueries.push({ key, name: nameOfChannel(seed.artist, channelKey) });
     }
 
-    const recommendations: Track[] = [];
-    const seen = new Set<string>(seedTrackIds);
+    const seenIds = new Set(seedTrackIds);
+    const seenTitles = new Set<string>();
+    for (const seed of seeds) {
+      // La misma canción en otro vídeo (p. ej. "(Official Video)") no es una propuesta.
+      const key = artistOfChannel(artistKey(seed.artist));
+      seenTitles.add(`${key}|${songKey(seed.title)}`);
+    }
 
-    for (const artist of artistNames) {
+    const candidates: RecommendationCandidate[] = [];
+    /** Colaboradores pendientes de buscar; primero los de los títulos semilla. */
+    const pendingCollabs: string[] = [];
+    const pendingKeys = new Set<string>();
+
+    const collectCollabs = (raw: string) => {
+      for (const name of titleCollaborators(raw)) {
+        const key = artistKey(name);
+        if (!key || isCoveredArtistKey(key, queriedKeys) || pendingKeys.has(key)) continue;
+        pendingKeys.add(key);
+        pendingCollabs.push(name);
+      }
+    };
+
+    for (const seed of seeds) {
+      collectCollabs(seed.title);
+    }
+
+    const search = async (
+      queryText: string,
+      /** Artista de la consulta (null en las búsquedas por género). */
+      artist: { key: string; name: string } | null,
+      shortOnly = false
+    ) => {
       const query = this.buildQuery({
         part: 'snippet',
         type: 'video',
         videoCategoryId: YOUTUBE_MUSIC_CATEGORY_ID,
-        maxResults: '10',
-        q: artist,
+        maxResults: String(MAX_RESULTS_PER_QUERY),
+        // En las búsquedas por género, los mixes de horas se cuelan siempre.
+        videoDuration: shortOnly ? 'short' : undefined,
+        q: queryText,
       });
       let page: YouTubeListResponse<YouTubeSearchItem>;
       try {
         page = await this.request<YouTubeListResponse<YouTubeSearchItem>>(`/search?${query}`);
       } catch {
-        continue;
+        return; // Una búsqueda caída no debe tumbar toda la pantalla.
       }
 
       for (const item of page.items ?? []) {
         const videoId =
           typeof item.id === 'string' ? item.id : item.id?.videoId ?? undefined;
-        if (!videoId || seen.has(videoId)) continue;
-        seen.add(videoId);
-        recommendations.push({
-          id: videoId,
-          title: item.snippet.title,
-          artist: item.snippet.channelTitle ?? 'YouTube Music',
-          album: '',
-          coverUrl: bestThumbnail(item.snippet.thumbnails),
-          previewUrl: null,
-          durationMs: 0,
-          provider: 'youtube',
-        });
-        if (recommendations.length >= MAX_RECOMMENDATIONS) {
-          return recommendations;
-        }
-      }
-    }
+        if (!videoId || seenIds.has(videoId)) continue;
 
-    return recommendations;
+        const title = item.snippet.title;
+        const channel = item.snippet.channelTitle ?? 'YouTube Music';
+        const channelKey = artistKey(channel);
+
+        let key = artistOfChannel(channelKey);
+        let artistName = nameOfChannel(channel, channelKey);
+        const credit = titleArtistCredit(title);
+        if (artist && credit && artistKey(credit).includes(artist.key)) {
+          // El título confirma al artista buscado (el canal puede ser su sello).
+          key = artist.key;
+          artistName = credit;
+          if (!channelArtistKeys.has(channelKey)) {
+            channelArtistKeys.set(channelKey, artist.key);
+            channelArtistNames.set(channelKey, artist.name);
+          }
+        }
+
+        // Mismo artista y misma canción ⇒ duplicado ("X" y "X (Official Video)").
+        const dedupeKey = `${key}|${songKey(title)}`;
+        if (seenTitles.has(dedupeKey)) continue;
+        seenIds.add(videoId);
+        seenTitles.add(dedupeKey);
+
+        candidates.push({
+          key,
+          track: {
+            id: videoId,
+            title,
+            artist: artistName,
+            album: '',
+            coverUrl: bestThumbnail(item.snippet.thumbnails),
+            previewUrl: null,
+            durationMs: 0,
+            provider: 'youtube',
+          },
+        });
+        // Los propios resultados revelan colaboraciones ("X & Y - …").
+        collectCollabs(title);
+      }
+    };
+
+    // Ronda 1: artistas semilla. Ronda 2: colaboradores. Ronda 3: género.
+    // Dentro de cada ronda las búsquedas son independientes: en paralelo para
+    // que la pantalla no encadene 6-8 llamadas secuenciales.
+    await Promise.all(artistQueries.map((query) => search(query.name, query, false)));
+    await Promise.all(
+      pendingCollabs
+        .slice(0, MAX_COLLAB_QUERIES)
+        .map((name) => search(name, { key: artistKey(name), name }, false))
+    );
+
+    const genreTags = pickGenreTags(await this.fetchSeedTags(seedTrackIds), {
+      knownArtistKeys: [
+        ...queriedKeys,
+        ...channelArtistKeys.keys(),
+        ...channelArtistKeys.values(),
+        ...pendingKeys,
+      ],
+      seedTitles: seeds.map((seed) => seed.title),
+      limit: MAX_TAG_QUERIES,
+    });
+    await Promise.all(genreTags.map((tag) => search(tag, null, true)));
+
+    const pick = (maxPerArtist: number) =>
+      diversifyByArtist(candidates, { maxPerArtist, maxTotal: MAX_RECOMMENDATIONS });
+    const diversified = pick(MAX_PER_ARTIST);
+    // Sin fuentes suficientes (ni colaboradores ni etiquetas) se relaja el
+    // tope por artista: mejor más canciones del propio artista que tres filas.
+    return diversified.length >= MIN_RECOMMENDATIONS ? diversified : pick(MAX_PER_ARTIST_FILL);
   }
 }

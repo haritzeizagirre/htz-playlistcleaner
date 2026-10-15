@@ -9,10 +9,10 @@ import { FastForward, Pause, Play, Rewind } from 'lucide-react-native';
 import {
   HtzButton,
   HtzCard,
-  HtzProgressBar,
   htzTokens,
 } from '@haritzeiza/htz-react/native';
 
+import { SeekBar } from '@/components/SeekBar';
 import { PLAYER_CARD_MIN_HEIGHT } from '@/utils/constants';
 import { formatSeconds } from '@/utils/format';
 
@@ -25,8 +25,8 @@ import { formatSeconds } from '@/utils/format';
  *   controles visibles son los del design system.
  * - Salta la intro (primeros 30 s) en pistas largas cuando actúa de último
  *   recurso; si el usuario pide la canción completa, empieza en 0 (`skipIntro`).
- * - Si el vídeo no se puede incrustar, avisa con `onUnavailable` para que la
- *   pantalla caiga al resolver de previews (iTunes).
+ * - Si el vídeo no se puede incrustar (o YouTube lo rechaza), avisa con
+ *   `onUnavailable` para que la pantalla vuelva al preview y pueda reintentar.
  *
  * Nota: la pantalla debe montarlo con `key={videoId}` para reiniciar el estado
  * en cada canción (evita efectos de reseteo).
@@ -38,6 +38,16 @@ const INTRO_SKIP_SECONDS = 30;
 const INTRO_SKIP_MIN_DURATION = 90;
 const POLL_INTERVAL_MS = 500;
 
+/**
+ * Origen con el que se carga el HTML local del player.
+ *
+ * Desde 2025 YouTube rechaza los embeds sin Origin/Referer válido (error 153
+ * «Video Player Configuration Error»). Con `useLocalHTML` a secas la página
+ * queda con origen opaco (about:blank) y el vídeo no llega a reproducirse;
+ * con `baseUrlOverride` adopta este origen y la reproducción se acepta.
+ */
+const PLAYER_BASE_URL = 'https://playlist-cleaner.app';
+
 interface YouTubeAudioPlayerProps {
   videoId: string;
   active: boolean;
@@ -47,6 +57,13 @@ interface YouTubeAudioPlayerProps {
    */
   skipIntro?: boolean;
   onUnavailable: (reason: string) => void;
+  /**
+   * Estado play/pausa controlado por el padre (pantalla de descubrimiento,
+   * que tiene botones de reproducción propios). Si no se indica, el
+   * reproductor gestiona su propio play/pausa.
+   */
+  playing?: boolean;
+  onPlayingChange?: (playing: boolean) => void;
 }
 
 export function YouTubeAudioPlayer({
@@ -54,15 +71,30 @@ export function YouTubeAudioPlayer({
   active,
   skipIntro = true,
   onUnavailable,
+  playing: playingProp,
+  onPlayingChange,
 }: YouTubeAudioPlayerProps) {
   const playerRef = useRef<YoutubeIframeRef | null>(null);
   const seededIntroRef = useRef(false);
-  /** Intención del usuario (el botón play/pausa); `active` la modula al salir. */
-  const [userPlaying, setUserPlaying] = useState(true);
+  /** Temporizador del reenganche tras acabar una canción (se limpia al desmontar). */
+  const resumeTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /** Intención del usuario cuando el play/pausa no lo controla el padre. */
+  const [internalPlaying, setInternalPlaying] = useState(true);
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
 
-  const shouldPlay = active && userPlaying;
+  const playing = playingProp ?? internalPlaying;
+  const setPlaying = useCallback(
+    (value: boolean) => {
+      if (playingProp === undefined) {
+        setInternalPlaying(value);
+      }
+      onPlayingChange?.(value);
+    },
+    [playingProp, onPlayingChange]
+  );
+
+  const shouldPlay = active && playing;
 
   // La librería no expone onProgress: se sondea el tiempo con el ref.
   useEffect(() => {
@@ -88,18 +120,34 @@ export function YouTubeAudioPlayer({
     return () => clearInterval(interval);
   }, [shouldPlay, skipIntro]);
 
-  const handleStateChange = useCallback((state: PLAYER_STATES) => {
-    if (state === PLAYER_STATES.ENDED) {
-      // Las canciones se repiten mientras la tarjeta está visible.
-      playerRef.current?.seekTo(0, true);
-      setCurrentTime(0);
-    }
-  }, []);
+  const handleStateChange = useCallback(
+    (state: PLAYER_STATES) => {
+      if (state === PLAYER_STATES.ENDED) {
+        // Las canciones se repiten mientras la tarjeta está visible: vuelve al
+        // inicio y reanuda. Togglea `play` porque el postMessage de play/pausa
+        // no basta (regresión 2.4.x; ver patches/react-native-youtube-iframe).
+        playerRef.current?.seekTo(0, true);
+        setCurrentTime(0);
+        setPlaying(false);
+        resumeTimeoutRef.current = setTimeout(() => setPlaying(true), 200);
+      }
+    },
+    [setPlaying]
+  );
+
+  // Limpia el temporizador de reenganche si la tarjeta se desmonta entre medias.
+  useEffect(
+    () => () => {
+      if (resumeTimeoutRef.current) clearTimeout(resumeTimeoutRef.current);
+    },
+    []
+  );
 
   const handleError = useCallback(
     (error: string) => {
-      console.warn('[youtube-player] error del iframe:', error);
-      onUnavailable(error);
+      // La librería no mapea códigos recientes (p. ej. el 153): llegan como undefined.
+      console.warn('[youtube-player] error del iframe:', error ?? '(código sin mapear)');
+      onUnavailable(error ?? 'unknown');
     },
     [onUnavailable]
   );
@@ -119,6 +167,7 @@ export function YouTubeAudioPlayer({
           volume={100}
           forceAndroidAutoplay
           useLocalHTML
+          baseUrlOverride={PLAYER_BASE_URL}
           initialPlayerParams={{
             controls: false,
             loop: true,
@@ -139,7 +188,16 @@ export function YouTubeAudioPlayer({
       <HtzCard elevated style={styles.card}>
         <View style={styles.row}>
           <View style={styles.timeBar}>
-            <HtzProgressBar value={progress} height={6} />
+            <SeekBar
+              value={progress}
+              duration={duration}
+              onSeek={(seconds) => {
+                playerRef.current?.seekTo(seconds, true);
+                // Respuesta inmediata de la UI; el sondeo confirmará el tiempo real.
+                setCurrentTime(seconds);
+              }}
+              accessibilityLabel="Ir a un punto de la canción"
+            />
           </View>
           <View style={styles.controls}>
             <HtzButton
@@ -155,7 +213,7 @@ export function YouTubeAudioPlayer({
               variant="primary"
               size="md"
               accessibilityLabel={shouldPlay ? 'Pausar' : 'Reproducir'}
-              onPress={() => setUserPlaying((value) => !value)}
+              onPress={() => setPlaying(!playing)}
               style={styles.playButton}
               icon={
                 shouldPlay ? (
